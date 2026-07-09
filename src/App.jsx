@@ -114,7 +114,7 @@ function Spinner() {
 }
 
 async function callAI(prompt) {
-  const res=await fetch("https://api.anthropic.com/v1/messages",{
+  const res=await fetch("/api/claude",{
     method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})
   });
@@ -923,7 +923,7 @@ function AIAnalysis({data,period,wrongsOnly,onClose}) {
     const next=[...messages,um];
     setMessages(next);setInput("");setChatLoading(true);
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},
+      const res=await fetch("/api/claude",{method:"POST",headers:{"Content-Type":"application/json"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
           messages:[{role:"user",content:SYS+"\n\n"+buildContext()+"\n\n위 데이터 기반으로 답해줘."},{role:"assistant",content:initText},...next.slice(1)]})});
       const json=await res.json();
@@ -1497,3 +1497,4 @@ export default function App() {
     </div>
   );
 }
+
