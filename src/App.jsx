@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
-const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학"];
+const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학","기타"];
 const SUBJECT_COLORS = {
   수학:   { bg:"#6366f1", light:"#6366f130", text:"#a5b4fc" },
   영어:   { bg:"#10b981", light:"#10b98130", text:"#6ee7b7" },
@@ -13,6 +13,7 @@ const SUBJECT_COLORS = {
   화학:   { bg:"#f97316", light:"#f9731630", text:"#fdba74" },
   생물:   { bg:"#22c55e", light:"#22c55e30", text:"#86efac" },
   지구과학:{ bg:"#84cc16", light:"#84cc1630", text:"#bef264" },
+  기타:   { bg:"#9ca3af", light:"#9ca3af30", text:"#d1d5db" },
 };
 const ERROR_CODES = {
   "XM-R":{ desc:"독해 오류", color:"#f97316" },
@@ -626,12 +627,13 @@ function WrongForm({onSave,onClose,editData}) {
   const [cause,setCause]=useState(editData?.cause||"");
   const [fix,setFix]=useState(editData?.fix||"");
   const [photo,setPhoto]=useState(editData?.photo||null);
+  const [answerPhoto,setAnswerPhoto]=useState(editData?.answerPhoto||null);
 
-  function handlePhoto(e) {
+  function handlePhoto(e, setter) {
     const file=e.target.files[0]; if(!file)return;
     if(file.size>4*1024*1024){alert("4MB 이하 사진만 가능해");return;}
     const reader=new FileReader();
-    reader.onload=ev=>setPhoto(ev.target.result);
+    reader.onload=ev=>setter(ev.target.result);
     reader.readAsDataURL(file);
   }
 
@@ -678,11 +680,22 @@ function WrongForm({onSave,onClose,editData}) {
       {/* 사진 */}
       <div style={{marginBottom:"0.9rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>문제 사진 (선택)</div>
-        <input type="file" accept="image/*" capture="environment" onChange={handlePhoto}
+        <input type="file" accept="image/*" capture="environment" onChange={e=>handlePhoto(e,setPhoto)}
           style={{...inp,padding:"0.4rem 0.6rem",fontSize:"0.78rem",cursor:"pointer"}}/>
         {photo&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
           <img src={photo} alt="미리보기" style={{height:60,borderRadius:6,border:"1px solid #1e2230",objectFit:"contain"}}/>
           <button onClick={()=>setPhoto(null)} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>삭제</button>
+        </div>}
+      </div>
+
+      {/* 정답 사진 */}
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>정답/해설 사진 (선택 · 나중에 문제풀이 모드에서 '답 보기'로 확인)</div>
+        <input type="file" accept="image/*" capture="environment" onChange={e=>handlePhoto(e,setAnswerPhoto)}
+          style={{...inp,padding:"0.4rem 0.6rem",fontSize:"0.78rem",cursor:"pointer"}}/>
+        {answerPhoto&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
+          <img src={answerPhoto} alt="정답 미리보기" style={{height:60,borderRadius:6,border:"1px solid #22c55e40",objectFit:"contain"}}/>
+          <button onClick={()=>setAnswerPhoto(null)} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>삭제</button>
         </div>}
       </div>
 
@@ -700,7 +713,12 @@ function WrongForm({onSave,onClose,editData}) {
 
       <Btn full onClick={()=>{
         if(!cause.trim()&&!problem.trim())return;
-        onSave({id:editData?.id||Date.now(),date,subject,code,problem,cause,fix,photo});
+        onSave({
+          id:editData?.id||Date.now(),date,subject,code,problem,cause,fix,photo,answerPhoto,
+          failCount:editData?.failCount||0,
+          attemptCount:editData?.attemptCount||0,
+          solved:editData?.solved||false,
+        });
         onClose();
       }}>저장</Btn>
     </Modal>
@@ -708,7 +726,7 @@ function WrongForm({onSave,onClose,editData}) {
 }
 
 // ── 오답 폴더 ──────────────────────────────────────────────────────────────────
-function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder}) {
+function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPractice,onPracticeGroup}) {
   const [openSubs,setOpenSubs]=useState({});
   const [openCodes,setOpenCodes]=useState({});
   const [viewMode,setViewMode]=useState("folder");
@@ -799,13 +817,19 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder}) {
                                 <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{codeEntries.length}개</span>
                               </div>
                               <div style={{display:"flex",gap:6,alignItems:"center"}}>
+                                {onPracticeGroup&&codeEntries.some(x=>x.photo)&&(
+                                  <button onClick={ev=>{ev.stopPropagation();onPracticeGroup(codeEntries.filter(x=>x.photo));}}
+                                    style={{background:"#6366f120",border:"1px solid #6366f140",borderRadius:6,color:"#818cf8",cursor:"pointer",fontSize:"0.65rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.15rem 0.5rem",fontWeight:700}}>
+                                    ✏️ 연속풀기
+                                  </button>
+                                )}
                                 <button onClick={e=>startRename(e,codeKey,getName(codeKey))} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.65rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
                                 <span style={{color:"#2d3241",fontSize:"0.7rem"}}>{codeOpen?"▲":"▼"}</span>
                               </div>
                             </div>
                             {codeOpen&&(
                               <div style={{padding:"0 0.65rem 0.65rem",borderTop:`1px solid ${cc.color}15`}}>
-                                {[...codeEntries].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit}/>)}
+                                {[...codeEntries].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit} onPractice={onPractice}/>)}
                               </div>
                             )}
                           </div>
@@ -831,14 +855,14 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder}) {
             </select>
             <span style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",alignSelf:"center"}}>{filtered.length}개</span>
           </div>
-          {[...filtered].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit}/>)}
+          {[...filtered].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit} onPractice={onPractice}/>)}
         </div>
       )}
     </div>
   );
 }
 
-function WrongCard({e,onDelete,onEdit}) {
+function WrongCard({e,onDelete,onEdit,onPractice}) {
   const [open,setOpen]=useState(false);
   const c=SUBJECT_COLORS[e.subject];
   return (
@@ -848,10 +872,12 @@ function WrongCard({e,onDelete,onEdit}) {
           <span style={{color:c?.text||"#a5b4fc",fontSize:"0.75rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif"}}>{e.subject}</span>
           <Tag code={e.code}/>
           {e.photo&&<span style={{fontSize:"0.7rem"}}>📷</span>}
+          {e.failCount>0&&<span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>❌×{e.failCount}</span>}
           <span style={{color:"#6b7280",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{e.problem||e.cause.slice(0,25)+(e.cause.length>25?"...":"")}</span>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
           <span style={{color:"#2d3241",fontSize:"0.65rem",fontFamily:"'JetBrains Mono',monospace"}}>{e.date}</span>
+          {e.photo&&onPractice&&<button onClick={ev=>{ev.stopPropagation();onPractice(e);}} style={{background:"#6366f120",border:"1px solid #6366f140",borderRadius:6,color:"#818cf8",cursor:"pointer",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.15rem 0.5rem",fontWeight:700}}>✏️ 풀기</button>}
           <button onClick={ev=>{ev.stopPropagation();onEdit(e);}} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
           <button onClick={ev=>{ev.stopPropagation();onDelete(e.id);}} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.82rem"}}>×</button>
           <span style={{color:"#2d3241",fontSize:"0.7rem"}}>{open?"▲":"▼"}</span>
@@ -864,6 +890,215 @@ function WrongCard({e,onDelete,onEdit}) {
           {e.photo&&<img src={e.photo} alt="오답" style={{marginTop:8,maxWidth:"100%",maxHeight:220,borderRadius:8,border:"1px solid #1e2230",objectFit:"contain",display:"block"}}/>}
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ── 문제풀이 모드 (사진 + 필기 + 답 가리기) ────────────────────────────────────
+function DrawingCanvas({bgImage, height=380}) {
+  const canvasRef = useRef(null);
+  const imgRef = useRef(null);
+  const [drawing,setDrawing]=useState(false);
+  const [color,setColor]=useState("#ef4444");
+  const [lineWidth,setLineWidth]=useState(3);
+  const [tool,setTool]=useState("pen"); // pen | eraser
+  const lastPos = useRef(null);
+
+  useEffect(()=>{
+    const canvas=canvasRef.current;
+    if(!canvas)return;
+    const ctx=canvas.getContext("2d");
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if(bgImage){
+      const img=new Image();
+      img.onload=()=>{
+        // fit image into canvas keeping aspect ratio
+        const scale=Math.min(canvas.width/img.width, canvas.height/img.height);
+        const w=img.width*scale, h=img.height*scale;
+        const x=(canvas.width-w)/2, y=(canvas.height-h)/2;
+        ctx.drawImage(img,x,y,w,h);
+        imgRef.current={x,y,w,h};
+      };
+      img.src=bgImage;
+    }
+  },[bgImage]);
+
+  function getPos(e){
+    const canvas=canvasRef.current;
+    const rect=canvas.getBoundingClientRect();
+    const clientX = e.touches? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches? e.touches[0].clientY : e.clientY;
+    return { x:(clientX-rect.left)*(canvas.width/rect.width), y:(clientY-rect.top)*(canvas.height/rect.height) };
+  }
+
+  function start(e){
+    e.preventDefault();
+    setDrawing(true);
+    lastPos.current=getPos(e);
+  }
+  function move(e){
+    if(!drawing)return;
+    e.preventDefault();
+    const canvas=canvasRef.current;
+    const ctx=canvas.getContext("2d");
+    const pos=getPos(e);
+    ctx.globalCompositeOperation = tool==="eraser" ? "destination-out" : "source-over";
+    ctx.strokeStyle=color;
+    ctx.lineWidth=tool==="eraser"?20:lineWidth;
+    ctx.lineCap="round";
+    ctx.lineJoin="round";
+    ctx.beginPath();
+    ctx.moveTo(lastPos.current.x,lastPos.current.y);
+    ctx.lineTo(pos.x,pos.y);
+    ctx.stroke();
+    lastPos.current=pos;
+  }
+  function end(){ setDrawing(false); lastPos.current=null; }
+
+  function clearDrawing(){
+    const canvas=canvasRef.current;
+    const ctx=canvas.getContext("2d");
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if(bgImage&&imgRef.current){
+      const img=new Image();
+      img.onload=()=>{ ctx.drawImage(img,imgRef.current.x,imgRef.current.y,imgRef.current.w,imgRef.current.h); };
+      img.src=bgImage;
+    }
+  }
+
+  const PEN_COLORS=["#ef4444","#3b82f6","#22c55e","#000000","#f59e0b"];
+
+  return (
+    <div>
+      {/* 도구 */}
+      <div style={{display:"flex",gap:6,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}>
+        <div style={{display:"flex",gap:4}}>
+          {PEN_COLORS.map(cl=>(
+            <button key={cl} onClick={()=>{setColor(cl);setTool("pen");}} style={{
+              width:24,height:24,borderRadius:"50%",background:cl,cursor:"pointer",
+              border:tool==="pen"&&color===cl?"2px solid white":"2px solid transparent",
+              boxShadow:tool==="pen"&&color===cl?`0 0 0 2px ${cl}`:undefined
+            }}/>
+          ))}
+        </div>
+        <button onClick={()=>setTool("eraser")} style={{
+          padding:"0.3rem 0.7rem",borderRadius:7,cursor:"pointer",
+          border:tool==="eraser"?"1px solid #f59e0b":"1px solid #2a2d3a",
+          background:tool==="eraser"?"#f59e0b20":"#111318",
+          color:tool==="eraser"?"#f59e0b":"#6b7280",
+          fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",fontWeight:700
+        }}>지우개</button>
+        <div style={{display:"flex",gap:3,alignItems:"center"}}>
+          {[2,4,7].map(w=>(
+            <button key={w} onClick={()=>setLineWidth(w)} style={{
+              width:26,height:26,borderRadius:6,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
+              border:lineWidth===w?"1px solid #6366f1":"1px solid #2a2d3a",background:lineWidth===w?"#6366f120":"#111318"
+            }}><div style={{width:w+2,height:w+2,borderRadius:"50%",background:"#9ca3af"}}/></button>
+          ))}
+        </div>
+        <button onClick={clearDrawing} style={{marginLeft:"auto",padding:"0.3rem 0.7rem",borderRadius:7,border:"1px solid #2a2d3a",background:"#111318",color:"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",cursor:"pointer"}}>필기 지우기</button>
+      </div>
+      <canvas ref={canvasRef} width={640} height={height}
+        onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+        onTouchStart={start} onTouchMove={move} onTouchEnd={end}
+        style={{width:"100%",height:height,background:"#0d0f18",borderRadius:10,border:"1px solid #1e2230",touchAction:"none",cursor:"crosshair",display:"block"}}/>
+    </div>
+  );
+}
+
+function PracticeMode({queue, onExit, onResult}) {
+  const [idx,setIdx]=useState(0);
+  const [showAnswer,setShowAnswer]=useState(false);
+  const [results,setResults]=useState({correct:0, wrong:0});
+  const [canvasKey,setCanvasKey]=useState(0);
+
+  const current = queue[idx];
+  const isLast = idx>=queue.length-1;
+
+  function mark(result){ // "correct" | "wrong"
+    onResult(current, result);
+    setResults(r=>({...r, [result]: r[result]+1}));
+    if(!isLast){
+      setIdx(i=>i+1);
+      setShowAnswer(false);
+      setCanvasKey(k=>k+1);
+    } else {
+      // finished
+      setTimeout(()=>{
+        alert(`연속 풀기 완료!\n맞음 ${results.correct+(result==="correct"?1:0)}개 · 틀림 ${results.wrong+(result==="wrong"?1:0)}개`);
+        onExit();
+      },100);
+    }
+  }
+
+  if(!current) return null;
+  const c=SUBJECT_COLORS[current.subject];
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"#050609",zIndex:998,overflowY:"auto"}}>
+      {/* 상단 바 */}
+      <div style={{position:"sticky",top:0,background:"rgba(5,6,9,0.97)",backdropFilter:"blur(12px)",
+        borderBottom:"1px solid #1a1d27",padding:"0.85rem 1.2rem",display:"flex",justifyContent:"space-between",alignItems:"center",zIndex:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <button onClick={onExit} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer",fontSize:"1.1rem"}}>←</button>
+          <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.9rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{current.subject}</span>
+          <Tag code={current.code}/>
+          {current.failCount>0&&<span style={{color:"#ef4444",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>❌×{current.failCount} 누적</span>}
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{color:"#22c55e",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>✅{results.correct}</span>
+          <span style={{color:"#ef4444",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>❌{results.wrong}</span>
+          <span style={{color:"#4b5563",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{idx+1}/{queue.length}</span>
+        </div>
+      </div>
+
+      <div style={{maxWidth:720,margin:"0 auto",padding:"1.2rem"}}>
+        {current.problem&&<div style={{color:"#9ca3af",fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10}}>{current.problem}</div>}
+
+        {/* 문제 사진 + 필기 캔버스 */}
+        <div style={{marginBottom:"1rem"}}>
+          <div style={{color:"#4b5563",fontSize:"0.7rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>문제 (여기에 직접 풀어봐)</div>
+          <DrawingCanvas key={canvasKey} bgImage={current.photo} height={420}/>
+        </div>
+
+        {/* 답 보기 버튼 / 답 표시 */}
+        {!showAnswer ? (
+          <Btn full color="#f59e0b" onClick={()=>setShowAnswer(true)}>👁️ 답 보기</Btn>
+        ) : (
+          <div style={{marginBottom:"1rem"}}>
+            <div style={{color:"#22c55e",fontSize:"0.7rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>정답 / 해설</div>
+            {current.answerPhoto ? (
+              <img src={current.answerPhoto} alt="정답" style={{width:"100%",borderRadius:10,border:"1px solid #22c55e30"}}/>
+            ) : (
+              <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"1rem",color:"#4b5563",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                등록된 정답 사진이 없어. 오답 수정에서 추가할 수 있어.
+              </div>
+            )}
+            {current.cause&&<div style={{marginTop:8,padding:"0.7rem 0.9rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:9,color:"#9ca3af",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
+              <span style={{color:"#6b7280"}}>이전 틀린 이유: </span>{current.cause}
+            </div>}
+          </div>
+        )}
+
+        {/* 채점 버튼 */}
+        {showAnswer && (
+          <div style={{display:"flex",gap:8,marginTop:"1rem"}}>
+            <button onClick={()=>mark("wrong")} style={{
+              flex:1,padding:"0.9rem",borderRadius:12,border:"1px solid #ef444450",
+              background:"#ef444418",color:"#ef4444",fontFamily:"'Noto Sans KR',sans-serif",
+              fontSize:"0.95rem",fontWeight:800,cursor:"pointer"
+            }}>❌ 틀렸어</button>
+            <button onClick={()=>mark("correct")} style={{
+              flex:1,padding:"0.9rem",borderRadius:12,border:"1px solid #22c55e50",
+              background:"#22c55e18",color:"#22c55e",fontFamily:"'Noto Sans KR',sans-serif",
+              fontSize:"0.95rem",fontWeight:800,cursor:"pointer"
+            }}>✅ 맞았어</button>
+          </div>
+        )}
+
+        {isLast && showAnswer && <div style={{textAlign:"center",color:"#4b5563",fontSize:"0.75rem",marginTop:10,fontFamily:"'Noto Sans KR',sans-serif"}}>마지막 문제야</div>}
+      </div>
     </div>
   );
 }
@@ -1025,6 +1260,7 @@ function ScheduleView({data,setData,initDate}) {
   const [dragging,setDragging]=useState(false);
   const [planModal,setPlanModal]=useState(null);
   const [editPlan,setEditPlan]=useState(null);
+  const [planView,setPlanView]=useState("day"); // day | week | month
 
   const hours=Array.from({length:TOTAL_HOURS},(_,i)=>(START_HOUR+i)%24);
   const daySlots=data.timetable[date]||{};
@@ -1142,19 +1378,94 @@ function ScheduleView({data,setData,initDate}) {
 
         {/* 계획 패널 */}
         <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.8rem"}}>
-            <span style={{color:"#9ca3af",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>
-              오늘 계획 <span style={{color:"#6366f1"}}>{dayPlans.length}개</span>
-              <span style={{color:"#22c55e",marginLeft:6}}>✅{dayPlans.filter(p=>p.status==="done").length}</span>
-              <span style={{color:"#ef4444",marginLeft:4}}>❌{dayPlans.filter(p=>p.status==="failed").length}</span>
-            </span>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.6rem",flexWrap:"wrap",gap:6}}>
+            <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:3}}>
+              {[["day","일간"],["week","주간"],["month","월간"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setPlanView(v)} style={{padding:"0.28rem 0.6rem",borderRadius:5,border:"none",cursor:"pointer",
+                  background:planView===v?"#6366f1":"transparent",color:planView===v?"white":"#4b5563",
+                  fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.7rem",fontWeight:700}}>{l}</button>
+              ))}
+            </div>
             <Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 추가</Btn>
           </div>
-          {dayPlans.length===0
-            ?<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>계획 없음</div>
-            :dayPlans.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus}
-                onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}/>)
-          }
+
+          {planView==="day"&&(
+            <>
+              <div style={{marginBottom:8}}>
+                <span style={{color:"#9ca3af",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>
+                  오늘 계획 <span style={{color:"#6366f1"}}>{dayPlans.length}개</span>
+                  <span style={{color:"#22c55e",marginLeft:6}}>✅{dayPlans.filter(p=>p.status==="done").length}</span>
+                  <span style={{color:"#ef4444",marginLeft:4}}>❌{dayPlans.filter(p=>p.status==="failed").length}</span>
+                </span>
+              </div>
+              {dayPlans.length===0
+                ?<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>계획 없음</div>
+                :dayPlans.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus}
+                    onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}/>)
+              }
+            </>
+          )}
+
+          {planView==="week"&&(()=>{
+            const dt=new Date(date);
+            const day=dt.getDay();
+            const mon=new Date(dt); mon.setDate(dt.getDate()-(day===0?6:day-1));
+            const weekDates=Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
+            const DAY_KO=["월","화","수","목","금","토","일"];
+            const weekPlans=(data.plans2||[]).filter(p=>weekDates.includes(p.date));
+            return (
+              <div>
+                <div style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>
+                  이번 주 계획 <span style={{color:"#6366f1",fontWeight:700}}>{weekPlans.length}개</span>
+                  <span style={{color:"#22c55e",marginLeft:6}}>✅{weekPlans.filter(p=>p.status==="done").length}</span>
+                  <span style={{color:"#ef4444",marginLeft:4}}>❌{weekPlans.filter(p=>p.status==="failed").length}</span>
+                </div>
+                {weekDates.map((wd,i)=>{
+                  const wp=weekPlans.filter(p=>p.date===wd);
+                  if(wp.length===0)return null;
+                  return (
+                    <div key={wd} style={{marginBottom:10}}>
+                      <div onClick={()=>setDate(wd)} style={{cursor:"pointer",color:wd===todayStr()?"#6366f1":"#6b7280",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>
+                        {DAY_KO[i]} · {wd.slice(5)}
+                      </div>
+                      {wp.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus} onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}/>)}
+                    </div>
+                  );
+                })}
+                {weekPlans.length===0&&<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>이번 주 계획 없음</div>}
+              </div>
+            );
+          })()}
+
+          {planView==="month"&&(()=>{
+            const ym=date.slice(0,7);
+            const monthPlans=(data.plans2||[]).filter(p=>p.date.startsWith(ym));
+            const bySubj={};
+            for(const p of monthPlans){bySubj[p.subject]=(bySubj[p.subject]||0)+1;}
+            const done=monthPlans.filter(p=>p.status==="done").length;
+            const failed=monthPlans.filter(p=>p.status==="failed").length;
+            const rate=monthPlans.length>0?Math.round((done/monthPlans.length)*100):0;
+            return (
+              <div>
+                <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:"1rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.8rem"}}>
+                  {[["총",monthPlans.length,"#6b7280"],["완료",done,"#22c55e"],["실패",failed,"#ef4444"],["달성률",rate+"%","#f59e0b"]].map(([l,v,c])=>(
+                    <div key={l} style={{textAlign:"center"}}>
+                      <div style={{color:c,fontSize:"1.1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace"}}>{v}</div>
+                      <div style={{color:"#4b5563",fontSize:"0.62rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>과목별 계획 수</div>
+                {Object.entries(bySubj).sort((a,b)=>b[1]-a[1]).map(([s,cnt])=>(
+                  <div key={s} style={{display:"flex",justifyContent:"space-between",padding:"0.4rem 0",borderBottom:"1px solid #111318"}}>
+                    <span style={{color:SUBJECT_COLORS[s]?.text||"#a5b4fc",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>{s}</span>
+                    <span style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>{cnt}개</span>
+                  </div>
+                ))}
+                {monthPlans.length===0&&<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>이번 달 계획 없음</div>}
+              </div>
+            );
+          })()}
         </div>
       </div>
 
@@ -1386,6 +1697,7 @@ export default function App() {
   const [modal,setModal]=useState(null);
   const [editWrong,setEditWrong]=useState(null);
   const [scheduleDate,setScheduleDate]=useState(todayStr());
+  const [practiceQueue,setPracticeQueue]=useState(null); // array of wrong entries with photo
 
   useEffect(()=>{save(data);},[data]);
 
@@ -1393,6 +1705,22 @@ export default function App() {
   const updateWrong=w=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===w.id?w:e)}));
   const delWrong=id=>setData(d=>({...d,wrongs:d.wrongs.filter(e=>e.id!==id)}));
   const renameFolder=(key,name)=>setData(d=>({...d,folderNames:{...(d.folderNames||{}),[key]:name}}));
+
+  function handlePracticeResult(entry, result) {
+    setData(d=>({
+      ...d,
+      wrongs: d.wrongs.map(w=>{
+        if(w.id!==entry.id) return w;
+        return {
+          ...w,
+          attemptCount: (w.attemptCount||0)+1,
+          failCount: result==="wrong" ? (w.failCount||0)+1 : (w.failCount||0),
+          solved: result==="correct" ? true : w.solved,
+          lastPracticed: todayStr(),
+        };
+      })
+    }));
+  }
 
   // 이번 주 통계
   const now=new Date();
@@ -1463,38 +1791,4 @@ export default function App() {
             ["총 오답",`${data.wrongs.length}개`,"#f59e0b"],
           ].map(([l,v,c])=>(
             <div key={l} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.8rem 1rem",flex:1,minWidth:100}}>
-              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:3}}>{l}</div>
-              <div style={{color:c,fontSize:"1.4rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{v}</div>
-            </div>
-          ))}
-        </div>
-
-        {/* 탭 */}
-        <div style={{display:"flex",gap:3,background:"#0a0c12",borderRadius:10,padding:3,border:"1px solid #1e2230",marginBottom:"1.2rem"}}>
-          {tabs.map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)} style={{
-              flex:1,padding:"0.45rem 0.4rem",borderRadius:7,border:"none",cursor:"pointer",
-              background:tab===t.id?"linear-gradient(135deg,#6366f1,#8b5cf6)":"transparent",
-              color:tab===t.id?"white":"#4b5563",
-              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:tab===t.id?700:400}}>{t.label}</button>
-          ))}
-        </div>
-
-        <div className="fade" key={tab}>
-          {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}/>}
-          {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
-          {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}/>}
-          {tab==="ref"&&<ReferencePanel wrongs={data.wrongs}/>}
-        </div>
-      </main>
-
-      {/* 모달 */}
-      {modal==="wrong"&&<WrongForm editData={editWrong} onSave={w=>{editWrong?updateWrong(w):addWrong(w);setModal(null);setEditWrong(null);}} onClose={()=>{setModal(null);setEditWrong(null);}}/>}
-      {modal==="backup"&&<BackupModal data={data} onImport={d=>setData(d)} onClose={()=>setModal(null)}/>}
-      {modal==="ai-week"&&<AIAnalysis data={data} period="week" onClose={()=>setModal(null)}/>}
-      {modal==="ai-month"&&<AIAnalysis data={data} period="month" onClose={()=>setModal(null)}/>}
-      {modal==="ai-quarter"&&<AIAnalysis data={data} period="quarter" onClose={()=>setModal(null)}/>}
-    </div>
-  );
-}
-
+              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase"
