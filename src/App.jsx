@@ -680,7 +680,7 @@ function WrongForm({onSave,onClose,editData}) {
       {/* 사진 */}
       <div style={{marginBottom:"0.9rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>문제 사진 (선택)</div>
-        <input type="file" accept="image/*" capture="environment" onChange={e=>handlePhoto(e,setPhoto)}
+        <input type="file" accept="image/*" onChange={e=>handlePhoto(e,setPhoto)}
           style={{...inp,padding:"0.4rem 0.6rem",fontSize:"0.78rem",cursor:"pointer"}}/>
         {photo&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
           <img src={photo} alt="미리보기" style={{height:60,borderRadius:6,border:"1px solid #1e2230",objectFit:"contain"}}/>
@@ -691,7 +691,7 @@ function WrongForm({onSave,onClose,editData}) {
       {/* 정답 사진 */}
       <div style={{marginBottom:"0.9rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>정답/해설 사진 (선택 · 나중에 문제풀이 모드에서 '답 보기'로 확인)</div>
-        <input type="file" accept="image/*" capture="environment" onChange={e=>handlePhoto(e,setAnswerPhoto)}
+        <input type="file" accept="image/*" onChange={e=>handlePhoto(e,setAnswerPhoto)}
           style={{...inp,padding:"0.4rem 0.6rem",fontSize:"0.78rem",cursor:"pointer"}}/>
         {answerPhoto&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
           <img src={answerPhoto} alt="정답 미리보기" style={{height:60,borderRadius:6,border:"1px solid #22c55e40",objectFit:"contain"}}/>
@@ -1791,4 +1791,4 @@ export default function App() {
             ["총 오답",`${data.wrongs.length}개`,"#f59e0b"],
           ].map(([l,v,c])=>(
             <div key={l} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.8rem 1rem",flex:1,minWidth:100}}>
-              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase"
+              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sa
