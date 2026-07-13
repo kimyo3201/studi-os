@@ -49,6 +49,8 @@ const initialData = {
   weekGoals: {},       // { "2024-W03": "이번 주 목표 텍스트" } -- 구버전, 마이그레이션용
   monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
+  studyMethods: [],     // 공부법: { id, subject, name, content, createdDate, goodCount, badCount }
+  methodReviews: [],    // 주간 리뷰 기록: { id, weekKey, date, goodIds:[], badIds:[] }
 };
 
 // ISO 주차 키 계산 (월요일 시작 기준)
@@ -1377,6 +1379,28 @@ function buildReportText(data, period) {
   lines.push(`[계획 수행 현황]`);
   lines.push(`총 계획: ${plans.length}개 | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개`);
   if(plans.length>0) lines.push(`달성률: ${Math.round((planDone/plans.length)*100)}%`);
+
+  // 공부법 & 주간 리뷰
+  const methods = data.studyMethods||[];
+  const reviews = (data.methodReviews||[]).filter(r=>new Date(r.date)>=cutoff);
+  lines.push("");
+  lines.push(`[공부법 현황] 운영 중 ${methods.filter(m=>m.status!=="removed").length}개 · 제거됨 ${methods.filter(m=>m.status==="removed").length}개`);
+  if(methods.length===0) lines.push("- 등록된 공부법 없음");
+  else {
+    lines.push(`효과 순위 (👍-👎 점수 기준):`);
+    [...methods].sort((a,b)=>((b.goodCount||0)-(b.badCount||0))-((a.goodCount||0)-(a.badCount||0))).forEach(m=>{
+      lines.push(`- [${m.subject}] ${m.name}${m.status==="removed"?" (제거됨)":""}: 👍${m.goodCount||0} 👎${m.badCount||0}${m.content?" — "+m.content:""}`);
+    });
+  }
+  lines.push("");
+  lines.push(`[이 기간 주간 리뷰] ${reviews.length}회`);
+  if(reviews.length===0) lines.push("- 리뷰 기록 없음");
+  else reviews.forEach(r=>{
+    const goodNames=r.goodIds.map(id=>methods.find(m=>m.id===id)?.name||"?").join(", ");
+    const badNames=r.badIds.map(id=>methods.find(m=>m.id===id)?.name||"?").join(", ");
+    lines.push(`- [${r.date}] 👍효과좋음: ${goodNames||"없음"} | 👎효과없음: ${badNames||"없음"}`);
+  });
+
   lines.push("");
   lines.push(`=== 리포트 끝 ===`);
 
@@ -1494,6 +1518,494 @@ function monthRangeLabel(dateStr) {
   return `${d.getFullYear()}년 ${d.getMonth()+1}월`;
 }
 
+// ── 목표 섹션 (주/달 독립 네비게이션 — 언제든 손쉽게 세우고 수정) ─────────────────
+// ── 목표 전용 페이지 (월 단위로 이동, 그 달의 주차별 목표를 카드로 펼쳐 보여줌) ─────
+function GoalOverview({data, setData}) {
+  const [monthOffset,setMonthOffset]=useState(0);
+  const baseDate = addMonths(todayStr(), monthOffset);
+  const monthKey = getMonthKey(baseDate);
+  const isCurrentMonth = monthOffset===0;
+  const d = new Date(baseDate);
+  const year = d.getFullYear();
+  const month = d.getMonth();
+  const daysInMonth = new Date(year, month+1, 0).getDate();
+
+  const saveGoal=g=>{
+    setData(dt=>{
+      const list=[...(dt.goalItems||[])];
+      const idx=list.findIndex(x=>x.id===g.id);
+      if(idx>=0) list[idx]=g; else list.push(g);
+      return {...dt,goalItems:list};
+    });
+  };
+  const setGoalStatus=(id,status)=>{
+    setData(dt=>({...dt,goalItems:(dt.goalItems||[]).map(g=>g.id===id?{...g,status}:g)}));
+  };
+  const deleteGoal=id=>{
+    setData(dt=>({...dt,goalItems:(dt.goalItems||[]).filter(g=>g.id!==id)}));
+  };
+
+  // 이 달에 걸친 모든 ISO 주차 키를 날짜 순서대로 모으기 (중복 제거, 순서 유지)
+  const weekKeysInMonth=[];
+  for(let dayNum=1; dayNum<=daysInMonth; dayNum++){
+    const ds=`${year}-${String(month+1).padStart(2,"0")}-${String(dayNum).padStart(2,"0")}`;
+    const wk=getWeekKey(ds);
+    if(!weekKeysInMonth.some(w=>w.key===wk)) weekKeysInMonth.push({key:wk, sampleDate:ds});
+  }
+
+  const monthGoals=(data.goalItems||[]).filter(g=>g.scope==="month"&&g.scopeKey===monthKey);
+  const monthDone=monthGoals.filter(g=>g.status==="done").length;
+
+  const MONTH_KO=["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+
+  return (
+    <div>
+      {/* 월 이동 네비게이터 */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:"1.3rem"}}>
+        <button onClick={()=>setMonthOffset(o=>o-1)} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,color:"#9ca3af",cursor:"pointer",fontSize:"1.1rem",padding:"0.3rem 0.8rem"}}>‹</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{color:"#f1f3f9",fontSize:"1.05rem",fontWeight:900,fontFamily:"'Noto Sans KR',sans-serif"}}>{year}년 {MONTH_KO[month]}</div>
+          {!isCurrentMonth && <div onClick={()=>setMonthOffset(0)} style={{color:"#6366f1",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",cursor:"pointer",textDecoration:"underline",marginTop:2}}>이번 달로</div>}
+        </div>
+        <button onClick={()=>setMonthOffset(o=>o+1)} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,color:"#9ca3af",cursor:"pointer",fontSize:"1.1rem",padding:"0.3rem 0.8rem"}}>›</button>
+      </div>
+
+      {/* 이 달의 월간 목표 */}
+      <div style={{background:"#f59e0b10",border:"1px solid #f59e0b35",borderRadius:14,padding:"1.1rem",marginBottom:"1.3rem"}}>
+        <MonthGoalBlock monthKey={monthKey} goals={monthGoals} onSave={saveGoal} onStatus={setGoalStatus} onDelete={deleteGoal}/>
+      </div>
+
+      {/* 이 달에 걸친 주차별 목표 카드들 */}
+      <div style={{color:"#6b7280",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8,paddingLeft:2}}>
+        이 달의 주간 목표 ({weekKeysInMonth.length}주)
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        {weekKeysInMonth.map(({key,sampleDate},i)=>(
+          <WeekGoalCard key={key} weekKey={key} sampleDate={sampleDate} weekIndex={i+1}
+            goals={(data.goalItems||[]).filter(g=>g.scope==="week"&&g.scopeKey===key)}
+            onSave={saveGoal} onStatus={setGoalStatus} onDelete={deleteGoal}/>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MonthGoalBlock({monthKey, goals, onSave, onStatus, onDelete}) {
+  const [modalOpen,setModalOpen]=useState(false);
+  const [editGoal,setEditGoal]=useState(null);
+  const done=goals.filter(g=>g.status==="done").length;
+  return (
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+        <span style={{color:"#f59e0b",fontSize:"0.85rem",fontWeight:900,fontFamily:"'Noto Sans KR',sans-serif"}}>🏁 이 달의 목표</span>
+        {goals.length>0&&<span style={{color:"#d97706",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{done}/{goals.length}</span>}
+        <div style={{flex:1}}/>
+        <button onClick={()=>{setEditGoal(null);setModalOpen(true);}} style={{background:"#f59e0b20",border:"1px solid #f59e0b40",borderRadius:7,color:"#fbbf24",cursor:"pointer",fontSize:"0.74rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,padding:"0.25rem 0.65rem"}}>+ 목표 추가</button>
+      </div>
+      {goals.length===0
+        ? <div style={{color:"#78716c",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif"}}>이 달의 목표가 아직 없어. 위 버튼으로 세워봐.</div>
+        : <div style={{display:"flex",flexDirection:"column",gap:6}}>
+            {goals.map(g=><GoalCard key={g.id} goal={g} onStatus={onStatus} onEdit={g=>{setEditGoal(g);setModalOpen(true);}} onDelete={onDelete}/>)}
+          </div>
+      }
+      {modalOpen && (
+        <GoalForm editData={editGoal} scope="month" scopeKey={monthKey}
+          onSave={g=>{onSave(g);setModalOpen(false);setEditGoal(null);}}
+          onClose={()=>{setModalOpen(false);setEditGoal(null);}}/>
+      )}
+    </div>
+  );
+}
+
+function WeekGoalCard({weekKey, sampleDate, weekIndex, goals, onSave, onStatus, onDelete}) {
+  const [open,setOpen]=useState(true);
+  const [modalOpen,setModalOpen]=useState(false);
+  const [editGoal,setEditGoal]=useState(null);
+  const done=goals.filter(g=>g.status==="done").length;
+  const label=weekRangeLabel(sampleDate);
+  const isCurrentWeek = getWeekKey(todayStr())===weekKey;
+
+  return (
+    <div style={{background:"#0a0c12",border:`1px solid ${isCurrentWeek?"#6366f150":"#1e2230"}`,borderRadius:12,overflow:"hidden"}}>
+      <div onClick={()=>setOpen(o=>!o)} style={{padding:"0.7rem 0.9rem",cursor:"pointer",display:"flex",alignItems:"center",gap:8}}>
+        <span style={{color:isCurrentWeek?"#818cf8":"#6b7280",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700,flexShrink:0}}>{weekIndex}주차</span>
+        <span style={{color:"#9ca3af",fontSize:"0.74rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{label}</span>
+        {isCurrentWeek&&<span style={{background:"#6366f120",color:"#818cf8",fontSize:"0.62rem",padding:"0.08rem 0.4rem",borderRadius:99,fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>이번 주</span>}
+        {goals.length>0&&<span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>({done}/{goals.length})</span>}
+        <div style={{flex:1}}/>
+        <button onClick={e=>{e.stopPropagation();setEditGoal(null);setModalOpen(true);setOpen(true);}} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>+ 추가</button>
+        <span style={{color:"#4b5563",fontSize:"0.68rem"}}>{open?"▲":"▼"}</span>
+      </div>
+      {open&&(
+        <div style={{padding:"0 0.9rem 0.85rem",borderTop:"1px solid #14161f"}}>
+          {goals.length===0
+            ? <div style={{color:"#4b5563",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif",paddingTop:8}}>목표 없음</div>
+            : <div style={{display:"flex",flexDirection:"column",gap:5,paddingTop:8}}>
+                {goals.map(g=><GoalCard key={g.id} goal={g} onStatus={onStatus} onEdit={g=>{setEditGoal(g);setModalOpen(true);}} onDelete={onDelete}/>)}
+              </div>
+          }
+        </div>
+      )}
+      {modalOpen && (
+        <GoalForm editData={editGoal} scope="week" scopeKey={weekKey}
+          onSave={g=>{onSave(g);setModalOpen(false);setEditGoal(null);}}
+          onClose={()=>{setModalOpen(false);setEditGoal(null);}}/>
+      )}
+    </div>
+  );
+}
+
+// ── 공부법 설계 & 주간 리뷰 시스템 ────────────────────────────────────────────────
+function MethodForm({onSave, onClose, editData}) {
+  const [subject,setSubject]=useState(editData?.subject||"수학");
+  const [name,setName]=useState(editData?.name||"");
+  const [content,setContent]=useState(editData?.content||"");
+  return (
+    <Modal title={editData?"공부법 수정":"새 공부법 등록"} onClose={onClose}>
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>과목</div>
+        <select value={subject} onChange={e=>setSubject(e.target.value)} style={inp}>
+          {SUBJECTS.map(s=><option key={s}>{s}</option>)}
+          <option value="전체">전체 (과목 무관)</option>
+        </select>
+      </div>
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>공부법 이름</div>
+        <input value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="예: 백지 인출 복습법"/>
+      </div>
+      <div style={{marginBottom:"1.2rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>상세 내용</div>
+        <textarea value={content} onChange={e=>setContent(e.target.value)} rows={5}
+          style={{...inp,resize:"vertical"}} placeholder="구체적으로 어떻게 하는 공부법인지 적어줘"/>
+      </div>
+      <Btn full onClick={()=>{
+        if(!name.trim())return;
+        onSave({
+          id:editData?.id||Date.now(), subject, name, content,
+          createdDate:editData?.createdDate||todayStr(),
+          goodCount:editData?.goodCount||0, badCount:editData?.badCount||0,
+          status:editData?.status||"active", // active | removed
+        });
+        onClose();
+      }}>저장</Btn>
+    </Modal>
+  );
+}
+
+function MethodCard({method, onEdit, onDelete}) {
+  const c=SUBJECT_COLORS[method.subject];
+  return (
+    <div style={{background:"#0a0c12",border:`1px solid ${method.status==="removed"?"#ef444430":"#1e2230"}`,borderRadius:11,padding:"0.85rem 1rem",marginBottom:8,opacity:method.status==="removed"?0.55:1}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{method.subject}</span>
+          <span style={{color:"#f1f3f9",fontWeight:700,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{method.name}</span>
+          {method.status==="removed"&&<span style={{background:"#ef444420",color:"#ef4444",fontSize:"0.65rem",padding:"0.08rem 0.4rem",borderRadius:99,fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>제거됨</span>}
+        </div>
+        <div style={{display:"flex",gap:6,flexShrink:0}}>
+          <button onClick={()=>onEdit(method)} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
+          <button onClick={()=>onDelete(method.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.82rem"}}>×</button>
+        </div>
+      </div>
+      {method.content&&<div style={{color:"#9ca3af",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65,marginBottom:8}}>{method.content}</div>}
+      <div style={{display:"flex",gap:10,alignItems:"center"}}>
+        <span style={{color:"#22c55e",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>👍 {method.goodCount||0}</span>
+        <span style={{color:"#ef4444",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>👎 {method.badCount||0}</span>
+        <span style={{color:"#4b5563",fontSize:"0.66rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록: {method.createdDate}</span>
+      </div>
+    </div>
+  );
+}
+
+// 주간 리뷰 모달 — 가장 효과 좋은 것 최대 3개 / 가장 효과 없는 것 최대 3개 선택
+function WeeklyReviewModal({methods, onSave, onClose}) {
+  const activeMethods = methods.filter(m=>m.status!=="removed");
+  const [goodIds,setGoodIds]=useState([]);
+  const [badIds,setBadIds]=useState([]);
+
+  function toggleGood(id){
+    setBadIds(b=>b.filter(x=>x!==id));
+    setGoodIds(g=>g.includes(id)?g.filter(x=>x!==id):(g.length<3?[...g,id]:g));
+  }
+  function toggleBad(id){
+    setGoodIds(g=>g.filter(x=>x!==id));
+    setBadIds(b=>b.includes(id)?b.filter(x=>x!==id):(b.length<3?[...b,id]:b));
+  }
+
+  return (
+    <Modal title="🗓️ 일요일 밤 — 이번 주 공부법 리뷰" onClose={onClose} wide>
+      <p style={{color:"#6b7280",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"1rem",lineHeight:1.6}}>
+        이번 주 가장 효과 좋았던 공부법 최대 3개, 가장 효과 없었던 것 최대 3개를 골라줘.
+      </p>
+      <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:400,overflowY:"auto",marginBottom:"1rem"}}>
+        {activeMethods.length===0
+          ? <div style={{color:"#4b5563",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 공부법이 없어. 먼저 공부법을 등록해줘.</div>
+          : activeMethods.map(m=>{
+              const isGood=goodIds.includes(m.id);
+              const isBad=badIds.includes(m.id);
+              const c=SUBJECT_COLORS[m.subject];
+              return (
+                <div key={m.id} style={{
+                  display:"flex",alignItems:"center",gap:8,padding:"0.6rem 0.8rem",borderRadius:9,
+                  background:isGood?"#22c55e12":isBad?"#ef444412":"#0a0c12",
+                  border:`1px solid ${isGood?"#22c55e40":isBad?"#ef444440":"#1e2230"}`
+                }}>
+                  <span style={{color:c?.text||"#a5b4fc",fontSize:"0.72rem",fontWeight:700,fontFamily:"'Noto Sans KR',sans-serif",flexShrink:0}}>{m.subject}</span>
+                  <span style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",flex:1}}>{m.name}</span>
+                  <button onClick={()=>toggleGood(m.id)} disabled={!isGood&&goodIds.length>=3} style={{
+                    background:isGood?"#22c55e":"#1e223050",border:"1px solid "+(isGood?"#22c55e":"#2a2d3a"),borderRadius:7,
+                    color:isGood?"white":"#6b7280",cursor:goodIds.length>=3&&!isGood?"not-allowed":"pointer",
+                    fontSize:"0.72rem",padding:"0.25rem 0.55rem",fontWeight:700,opacity:goodIds.length>=3&&!isGood?0.4:1
+                  }}>👍</button>
+                  <button onClick={()=>toggleBad(m.id)} disabled={!isBad&&badIds.length>=3} style={{
+                    background:isBad?"#ef4444":"#1e223050",border:"1px solid "+(isBad?"#ef4444":"#2a2d3a"),borderRadius:7,
+                    color:isBad?"white":"#6b7280",cursor:badIds.length>=3&&!isBad?"not-allowed":"pointer",
+                    fontSize:"0.72rem",padding:"0.25rem 0.55rem",fontWeight:700,opacity:badIds.length>=3&&!isBad?0.4:1
+                  }}>👎</button>
+                </div>
+              );
+            })
+        }
+      </div>
+      <div style={{display:"flex",gap:10,marginBottom:"1rem",fontSize:"0.74rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+        <span style={{color:"#22c55e"}}>👍 효과 좋음 {goodIds.length}/3</span>
+        <span style={{color:"#ef4444"}}>👎 효과 없음 {badIds.length}/3</span>
+      </div>
+      <Btn full disabled={goodIds.length===0&&badIds.length===0} onClick={()=>{onSave(goodIds,badIds);onClose();}}>리뷰 저장</Btn>
+    </Modal>
+  );
+}
+
+function MethodOverview({methods}) {
+  const active = methods.filter(m=>m.status!=="removed");
+  const totalGood = active.reduce((a,m)=>a+(m.goodCount||0),0);
+  const totalBad = active.reduce((a,m)=>a+(m.badCount||0),0);
+
+  // 과목별로 그룹핑, 과목 내에서는 점수순 정렬
+  const bySubject={};
+  for(const m of active){
+    if(!bySubject[m.subject]) bySubject[m.subject]=[];
+    bySubject[m.subject].push(m);
+  }
+  for(const s in bySubject) bySubject[s].sort((a,b)=>((b.goodCount||0)-(b.badCount||0))-((a.goodCount||0)-(a.badCount||0)));
+
+  // 전체 TOP3 / WORST3 (점수 차이 기준, 리뷰 반영된 것만 의미 있음)
+  const scored = active.filter(m=>(m.goodCount||0)+(m.badCount||0)>0);
+  const top3 = [...scored].sort((a,b)=>((b.goodCount||0)-(b.badCount||0))-((a.goodCount||0)-(a.badCount||0))).slice(0,3);
+  const worst3 = [...scored].sort((a,b)=>((a.goodCount||0)-(a.badCount||0))-((b.goodCount||0)-(b.badCount||0))).slice(0,3);
+
+  const subjectOrder = SUBJECTS.filter(s=>bySubject[s]).concat(Object.keys(bySubject).filter(s=>!SUBJECTS.includes(s)));
+
+  return (
+    <div>
+      {/* 전체 통계 */}
+      <div style={{display:"flex",gap:10,marginBottom:"1.2rem",flexWrap:"wrap"}}>
+        {[["등록된 공부법",active.length,"#6366f1"],["총 👍",totalGood,"#22c55e"],["총 👎",totalBad,"#ef4444"],["과목 수",Object.keys(bySubject).length,"#f59e0b"]].map(([l,v,c])=>(
+          <div key={l} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.8rem 1rem",flex:1,minWidth:90}}>
+            <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:3}}>{l}</div>
+            <div style={{color:c,fontSize:"1.4rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* TOP3 / WORST3 */}
+      {scored.length>0 && (
+        <div style={{display:"flex",gap:10,marginBottom:"1.3rem",flexWrap:"wrap"}}>
+          <div style={{flex:1,minWidth:220,background:"#22c55e10",border:"1px solid #22c55e30",borderRadius:12,padding:"0.9rem 1rem"}}>
+            <div style={{color:"#22c55e",fontSize:"0.72rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>🏆 가장 효과 좋은 공부법</div>
+            {top3.length===0
+              ? <div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>리뷰 데이터 없음</div>
+              : top3.map((m,i)=>(
+                  <div key={m.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.3rem 0",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                    <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{i+1}</span>
+                    <span style={{color:SUBJECT_COLORS[m.subject]?.text||"#a5b4fc",fontWeight:700}}>{m.subject}</span>
+                    <span style={{color:"#d1d5db",flex:1}}>{m.name}</span>
+                    <span style={{color:"#22c55e",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>+{(m.goodCount||0)-(m.badCount||0)}</span>
+                  </div>
+                ))
+            }
+          </div>
+          <div style={{flex:1,minWidth:220,background:"#ef444410",border:"1px solid #ef444430",borderRadius:12,padding:"0.9rem 1rem"}}>
+            <div style={{color:"#ef4444",fontSize:"0.72rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>⚠️ 가장 효과 없는 공부법</div>
+            {worst3.length===0
+              ? <div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>리뷰 데이터 없음</div>
+              : worst3.map((m,i)=>(
+                  <div key={m.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.3rem 0",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                    <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{i+1}</span>
+                    <span style={{color:SUBJECT_COLORS[m.subject]?.text||"#a5b4fc",fontWeight:700}}>{m.subject}</span>
+                    <span style={{color:"#d1d5db",flex:1}}>{m.name}</span>
+                    <span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{(m.goodCount||0)-(m.badCount||0)}</span>
+                  </div>
+                ))
+            }
+          </div>
+        </div>
+      )}
+
+      {/* 전체 과목 공부법 (과목 무관으로 등록된 것들) — 최상단 별도 섹션 */}
+      {bySubject["전체"] && bySubject["전체"].length>0 && (
+        <div style={{marginBottom:"1.3rem"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+            <span style={{color:"#e2e8f0",fontWeight:900,fontSize:"0.88rem",fontFamily:"'Noto Sans KR',sans-serif"}}>🌐 전체 과목 공부법</span>
+            <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{bySubject["전체"].length}개</span>
+            <span style={{color:"#22c55e",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace"}}>👍{bySubject["전체"].reduce((a,m)=>a+(m.goodCount||0),0)}</span>
+            <span style={{color:"#ef4444",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace"}}>👎{bySubject["전체"].reduce((a,m)=>a+(m.badCount||0),0)}</span>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:5}}>
+            {bySubject["전체"].map(m=>{
+              const score=(m.goodCount||0)-(m.badCount||0);
+              return (
+                <div key={m.id} style={{background:"#0a0c12",border:"1px solid #6366f130",borderRadius:9,padding:"0.55rem 0.8rem",display:"flex",alignItems:"center",gap:8}}>
+                  <span style={{color:"#e8eaf0",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",flex:1}}>{m.name}</span>
+                  <span style={{color:"#22c55e",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>👍{m.goodCount||0}</span>
+                  <span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>👎{m.badCount||0}</span>
+                  <span style={{color:score>0?"#22c55e":score<0?"#ef4444":"#6b7280",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700,minWidth:28,textAlign:"right"}}>{score>0?"+":""}{score}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* 과목별 그룹 */}
+      {active.length===0
+        ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 공부법이 없어</div>
+        : subjectOrder.filter(sub=>sub!=="전체").map(sub=>{
+            const list=bySubject[sub];
+            const c=SUBJECT_COLORS[sub];
+            const subGood=list.reduce((a,m)=>a+(m.goodCount||0),0);
+            const subBad=list.reduce((a,m)=>a+(m.badCount||0),0);
+            return (
+              <div key={sub} style={{marginBottom:"1rem"}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                  <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{sub}</span>
+                  <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{list.length}개</span>
+                  <span style={{color:"#22c55e",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace"}}>👍{subGood}</span>
+                  <span style={{color:"#ef4444",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace"}}>👎{subBad}</span>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                  {list.map(m=>{
+                    const score=(m.goodCount||0)-(m.badCount||0);
+                    return (
+                      <div key={m.id} style={{background:"#0a0c12",border:`1px solid ${c?.bg||"#6366f1"}25`,borderRadius:9,padding:"0.55rem 0.8rem",display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{color:"#e8eaf0",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",flex:1}}>{m.name}</span>
+                        <span style={{color:"#22c55e",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>👍{m.goodCount||0}</span>
+                        <span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>👎{m.badCount||0}</span>
+                        <span style={{color:score>0?"#22c55e":score<0?"#ef4444":"#6b7280",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700,minWidth:28,textAlign:"right"}}>{score>0?"+":""}{score}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })
+      }
+    </div>
+  );
+}
+
+function MethodSystem({data, setData}) {
+  const [modal,setModal]=useState(null); // "add" | "edit" | "review"
+  const [editMethod,setEditMethod]=useState(null);
+  const [filter,setFilter]=useState("active"); // active | removed | all
+  const [view,setView]=useState("overview"); // overview | list
+
+  const methods = data.studyMethods||[];
+  const reviews = data.methodReviews||[];
+
+  function saveMethod(m){
+    setData(d=>{
+      const list=[...(d.studyMethods||[])];
+      const idx=list.findIndex(x=>x.id===m.id);
+      if(idx>=0) list[idx]=m; else list.push(m);
+      return {...d,studyMethods:list};
+    });
+  }
+  function deleteMethod(id){
+    setData(d=>({...d,studyMethods:(d.studyMethods||[]).filter(m=>m.id!==id)}));
+  }
+  function saveReview(goodIds, badIds){
+    setData(d=>{
+      const list=(d.studyMethods||[]).map(m=>{
+        if(goodIds.includes(m.id)) return {...m, goodCount:(m.goodCount||0)+1};
+        if(badIds.includes(m.id)) return {...m, badCount:(m.badCount||0)+1};
+        return m;
+      });
+      const review={id:Date.now(), weekKey:getWeekKey(todayStr()), date:todayStr(), goodIds, badIds};
+      return {...d, studyMethods:list, methodReviews:[...(d.methodReviews||[]), review]};
+    });
+  }
+
+  const filtered = methods.filter(m=>{
+    if(filter==="active") return m.status!=="removed";
+    if(filter==="removed") return m.status==="removed";
+    return true;
+  });
+
+  // 최근 리뷰
+  const lastReview = reviews.length>0 ? reviews[reviews.length-1] : null;
+
+  return (
+    <div>
+      <div style={{display:"flex",gap:8,marginBottom:"1rem",flexWrap:"wrap",justifyContent:"space-between",alignItems:"center"}}>
+        <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:3}}>
+          {[["overview","한눈에 보기"],["list","목록"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setView(v)} style={{
+              padding:"0.35rem 0.7rem",borderRadius:6,border:"none",cursor:"pointer",
+              background:view===v?"#6366f1":"transparent",color:view===v?"white":"#6b7280",
+              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700
+            }}>{l}</button>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <Btn small color="#6366f1" onClick={()=>{setEditMethod(null);setModal("add");}}>+ 공부법 등록</Btn>
+          <Btn small color="#f59e0b" onClick={()=>setModal("review")}>🗓️ 일요일 리뷰 시작</Btn>
+        </div>
+      </div>
+
+      {lastReview&&(
+        <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:"1rem"}}>
+          <div style={{color:"#6b7280",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+            최근 리뷰: {lastReview.date} · 👍{lastReview.goodIds.length}개 👎{lastReview.badIds.length}개 선택됨
+          </div>
+        </div>
+      )}
+
+      {view==="overview" && <MethodOverview methods={methods}/>}
+
+      {view==="list" && (
+        <>
+          <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:3,marginBottom:"1rem"}}>
+            {[["active","운영 중"],["removed","제거됨"],["all","전체"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setFilter(v)} style={{
+                flex:1,padding:"0.35rem 0.6rem",borderRadius:6,border:"none",cursor:"pointer",
+                background:filter===v?"#6366f1":"transparent",color:filter===v?"white":"#6b7280",
+                fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.75rem",fontWeight:700
+              }}>{l}</button>
+            ))}
+          </div>
+
+          {filtered.length===0
+            ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 공부법이 없어</div>
+            : [...filtered].sort((a,b)=>(b.goodCount||0)-(b.badCount||0)-((a.goodCount||0)-(a.badCount||0))).map(m=>
+                <MethodCard key={m.id} method={m} onEdit={m=>{setEditMethod(m);setModal("edit");}} onDelete={deleteMethod}/>
+              )
+          }
+        </>
+      )}
+
+      {(modal==="add"||modal==="edit")&&(
+        <MethodForm editData={modal==="edit"?editMethod:null}
+          onSave={m=>{saveMethod(m);setModal(null);setEditMethod(null);}}
+          onClose={()=>{setModal(null);setEditMethod(null);}}/>
+      )}
+      {modal==="review"&&(
+        <WeeklyReviewModal methods={methods} onSave={saveReview} onClose={()=>setModal(null)}/>
+      )}
+    </div>
+  );
+}
+
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
 function ScheduleView({data,setData,initDate}) {
   const [date,setDate]=useState(initDate||todayStr());
@@ -1503,8 +2015,6 @@ function ScheduleView({data,setData,initDate}) {
   const [planModal,setPlanModal]=useState(null);
   const [editPlan,setEditPlan]=useState(null);
   const [planView,setPlanView]=useState("day"); // day | week | month
-  const [goalModalOpen,setGoalModalOpen]=useState(false);
-  const [editGoal,setEditGoal]=useState(null);
 
   const hours=Array.from({length:TOTAL_HOURS},(_,i)=>(START_HOUR+i)%24);
   const daySlots=data.timetable[date]||{};
@@ -1541,21 +2051,6 @@ function ScheduleView({data,setData,initDate}) {
           list.push({...plan,id:plan.id+"_m_"+tom,date:tom,status:"todo",note:"[이월] "+plan.content.slice(0,30)});
       }
       return {...d,plans2:list};});
-  }
-
-  function saveGoal(g){
-    setData(d=>{
-      const list=[...(d.goalItems||[])];
-      const idx=list.findIndex(x=>x.id===g.id);
-      if(idx>=0) list[idx]=g; else list.push(g);
-      return {...d,goalItems:list};
-    });
-  }
-  function setGoalStatus(id,status){
-    setData(d=>({...d,goalItems:(d.goalItems||[]).map(g=>g.id===id?{...g,status}:g)}));
-  }
-  function deleteGoal(id){
-    setData(d=>({...d,goalItems:(d.goalItems||[]).filter(g=>g.id!==id)}));
   }
 
   return (
@@ -1645,10 +2140,7 @@ function ScheduleView({data,setData,initDate}) {
                   fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.7rem",fontWeight:700}}>{l}</button>
               ))}
             </div>
-            <Btn small color="#6366f1" onClick={()=>{
-              if(planView==="day"){ setEditPlan(null); setPlanModal("add"); }
-              else { setEditGoal(null); setGoalModalOpen(true); }
-            }}>+ 추가</Btn>
+            {planView==="day"&&<Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 계획 추가</Btn>}
           </div>
 
           {planView==="day"&&(
@@ -1675,21 +2167,8 @@ function ScheduleView({data,setData,initDate}) {
             const weekDates=Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
             const DAY_KO=["월","화","수","목","금","토","일"];
             const weekPlans=(data.plans2||[]).filter(p=>weekDates.includes(p.date));
-            const weekKey=getWeekKey(date);
-            const weekGoals=(data.goalItems||[]).filter(g=>g.scope==="week"&&g.scopeKey===weekKey);
             return (
               <div>
-                {/* 이번 주 목표 */}
-                <div style={{background:"#6366f112",border:"1px solid #6366f130",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:10}}>
-                  <div style={{color:"#6366f1",fontSize:"0.7rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>
-                    🎯 이번 주 목표 {weekGoals.length>0&&`(${weekGoals.filter(g=>g.status==="done").length}/${weekGoals.length})`}
-                  </div>
-                  {weekGoals.length===0
-                    ?<div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>목표 없음 — 위 "+ 추가"로 세워봐</div>
-                    :weekGoals.map(g=><GoalCard key={g.id} goal={g} onStatus={setGoalStatus} onEdit={g=>{setEditGoal(g);setGoalModalOpen(true);}} onDelete={deleteGoal}/>)
-                  }
-                </div>
-
                 <div style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>
                   이번 주 계획 <span style={{color:"#6366f1",fontWeight:700}}>{weekPlans.length}개</span>
                   <span style={{color:"#22c55e",marginLeft:6}}>✅{weekPlans.filter(p=>p.status==="done").length}</span>
@@ -1720,21 +2199,8 @@ function ScheduleView({data,setData,initDate}) {
             const done=monthPlans.filter(p=>p.status==="done").length;
             const failed=monthPlans.filter(p=>p.status==="failed").length;
             const rate=monthPlans.length>0?Math.round((done/monthPlans.length)*100):0;
-            const monthKey=getMonthKey(date);
-            const monthGoals=(data.goalItems||[]).filter(g=>g.scope==="month"&&g.scopeKey===monthKey);
             return (
               <div>
-                {/* 이번 달 목표 */}
-                <div style={{background:"#f59e0b12",border:"1px solid #f59e0b30",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:10}}>
-                  <div style={{color:"#f59e0b",fontSize:"0.7rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>
-                    🏁 이번 달 목표 {monthGoals.length>0&&`(${monthGoals.filter(g=>g.status==="done").length}/${monthGoals.length})`}
-                  </div>
-                  {monthGoals.length===0
-                    ?<div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>목표 없음 — 위 "+ 추가"로 세워봐</div>
-                    :monthGoals.map(g=><GoalCard key={g.id} goal={g} onStatus={setGoalStatus} onEdit={g=>{setEditGoal(g);setGoalModalOpen(true);}} onDelete={deleteGoal}/>)
-                  }
-                </div>
-
                 <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:"1rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.8rem"}}>
                   {[["총",monthPlans.length,"#6b7280"],["완료",done,"#22c55e"],["실패",failed,"#ef4444"],["달성률",rate+"%","#f59e0b"]].map(([l,v,c])=>(
                     <div key={l} style={{textAlign:"center"}}>
@@ -1761,16 +2227,6 @@ function ScheduleView({data,setData,initDate}) {
         <PlanForm editData={planModal==="edit"?editPlan:null} defaultDate={date}
           onSave={p=>{savePlan(p);setPlanModal(null);setEditPlan(null);}}
           onClose={()=>{setPlanModal(null);setEditPlan(null);}}/>
-      )}
-
-      {goalModalOpen&&(
-        <GoalForm
-          editData={editGoal}
-          scope={planView==="month"?"month":"week"}
-          scopeKey={planView==="month"?getMonthKey(date):getWeekKey(date)}
-          onSave={g=>{saveGoal(g);setGoalModalOpen(false);setEditGoal(null);}}
-          onClose={()=>{setGoalModalOpen(false);setEditGoal(null);}}
-        />
       )}
     </div>
   );
@@ -2190,6 +2646,8 @@ export default function App() {
 
   const tabs=[
     {id:"schedule",label:"계획+타임테이블"},
+    {id:"goals",label:"목표"},
+    {id:"methods",label:"공부법"},
     {id:"calendar",label:"달력"},
     {id:"wrongs",label:`오답 (${data.wrongs.length})`},
     {id:"ref",label:"레퍼런스"},
@@ -2264,6 +2722,8 @@ export default function App() {
 
         <div className="fade" key={tab}>
           {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}/>}
+          {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
+          {tab==="methods"&&<MethodSystem data={data} setData={setData}/>}
           {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
           {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}
             onPractice={e=>setPracticeQueue([e])}
