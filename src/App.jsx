@@ -3,27 +3,36 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학","기타"];
 const SUBJECT_COLORS = {
-  수학:   { bg:"#6366f1", light:"#6366f130", text:"#a5b4fc" },
-  영어:   { bg:"#10b981", light:"#10b98130", text:"#6ee7b7" },
-  국어:   { bg:"#f59e0b", light:"#f59e0b30", text:"#fcd34d" },
-  과학:   { bg:"#3b82f6", light:"#3b82f630", text:"#93c5fd" },
-  사회:   { bg:"#ec4899", light:"#ec489930", text:"#f9a8d4" },
-  한국사: { bg:"#8b5cf6", light:"#8b5cf630", text:"#c4b5fd" },
-  물리:   { bg:"#06b6d4", light:"#06b6d430", text:"#67e8f9" },
-  화학:   { bg:"#f97316", light:"#f9731630", text:"#fdba74" },
-  생물:   { bg:"#22c55e", light:"#22c55e30", text:"#86efac" },
-  지구과학:{ bg:"#84cc16", light:"#84cc1630", text:"#bef264" },
-  기타:   { bg:"#9ca3af", light:"#9ca3af30", text:"#d1d5db" },
+  수학:   { bg:"#eab308", light:"#eab30830", text:"#fde047" }, // 노랑
+  영어:   { bg:"#a855f7", light:"#a855f730", text:"#d8b4fe" }, // 보라
+  국어:   { bg:"#ef4444", light:"#ef444430", text:"#fca5a5" }, // 빨강
+  과학:   { bg:"#3b82f6", light:"#3b82f630", text:"#93c5fd" }, // 파랑
+  사회:   { bg:"#9ca3af", light:"#9ca3af30", text:"#e5e7eb" }, // 회색
+  한국사: { bg:"#22c55e", light:"#22c55e30", text:"#86efac" }, // 초록
+  물리:   { bg:"#06b6d4", light:"#06b6d430", text:"#67e8f9" }, // 시안
+  화학:   { bg:"#f97316", light:"#f9731630", text:"#fdba74" }, // 주황
+  생물:   { bg:"#14b8a6", light:"#14b8a630", text:"#5eead4" }, // 청록
+  지구과학:{ bg:"#ec4899", light:"#ec489930", text:"#f9a8d4" }, // 핑크
+  기타:   { bg:"#64748b", light:"#64748b30", text:"#cbd5e1" }, // 슬레이트
 };
 const ERROR_CODES = {
-  "XM-R":{ desc:"독해 오류", color:"#f97316" },
-  "XM-C":{ desc:"개념 오류", color:"#ef4444" },
-  "XS":  { desc:"선지/조건 판단", color:"#a78bfa" },
-  "XD":  { desc:"주의 실수", color:"#06b6d4" },
-  "XR":  { desc:"처리 오류", color:"#3b82f6" },
-  "XT-T":{ desc:"시간 배분", color:"#f59e0b" },
-  "XT-M":{ desc:"전략/메타인지", color:"#10b981" },
-  "XF":  { desc:"감 풀이", color:"#ec4899" },
+  "XC-N":{ desc:"신규 개념", detail:"문제 풀며 처음 얻은 새 개념", color:"#f97316" },
+  "XC":  { desc:"개념 누락", detail:"배웠는데 까먹었거나 모르는 개념", color:"#ef4444" },
+  "XM-F":{ desc:"정독 누락", detail:"1번 정독 안 해서 조건·답 놓침", color:"#a78bfa" },
+  "XM-T/F":{ desc:"참/거짓 체크", detail:"옳은것/옳지않은것 헷갈림", color:"#06b6d4" },
+  "XM-V":{ desc:"검토 누락", detail:"풀이·답 재검토 안 함", color:"#3b82f6" },
+  "XJ":  { desc:"적용 오류", detail:"개념은 아는데 적용을 못함", color:"#10b981" },
+};
+// 대분류: XC(개념) / XM(정독·검토) / XJ(적용) — 오답 폴더 상위 그룹핑에 사용
+const ERROR_MAJOR = {
+  "XC-N":"XC", "XC":"XC",
+  "XM-F":"XM", "XM-T/F":"XM", "XM-V":"XM",
+  "XJ":"XJ",
+};
+const ERROR_MAJOR_LABEL = {
+  XC: { label:"XC — 개념", desc:"신규 개념 습득 / 개념 누락", color:"#ef4444" },
+  XM: { label:"XM — 정독·검토", desc:"정독 누락 / 참거짓 체크 / 검토 누락", color:"#3b82f6" },
+  XJ: { label:"XJ — 적용", desc:"개념은 알지만 적용을 못함", color:"#10b981" },
 };
 const STORAGE_KEY = "studyos_v5";
 const SLOT_H = 22; // px per 10min slot
@@ -37,13 +46,37 @@ const initialData = {
   plans: {},          // { "2024-01-01": "오늘 계획 텍스트" }
   wrongs: [],
   folderNames: {},
+  weekGoals: {},       // { "2024-W03": "이번 주 목표 텍스트" } -- 구버전, 마이그레이션용
+  monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
+  goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
 };
+
+// ISO 주차 키 계산 (월요일 시작 기준)
+function getWeekKey(dateStr) {
+  const d = new Date(dateStr);
+  const day = d.getDay();
+  const monday = new Date(d);
+  monday.setDate(d.getDate() - (day===0?6:day-1));
+  const year = monday.getFullYear();
+  const jan1 = new Date(year,0,1);
+  const week = Math.ceil((((monday-jan1)/86400000) + jan1.getDay()+1)/7);
+  return `${year}-W${String(week).padStart(2,"0")}`;
+}
+function getMonthKey(dateStr) {
+  return dateStr.slice(0,7); // "2024-01"
+}
 
 function load() {
   try { const r=localStorage.getItem(STORAGE_KEY); return r?JSON.parse(r):initialData; }
   catch { return initialData; }
 }
-function save(d) { try { localStorage.setItem(STORAGE_KEY,JSON.stringify(d)); } catch {} }
+function save(d) {
+  try {
+    localStorage.setItem(STORAGE_KEY,JSON.stringify(d));
+  } catch(err) {
+    alert("저장 실패! 저장 공간이 가득 찼을 수 있어. 오래된 오답 사진을 정리하거나 백업 후 데이터를 줄여줘.\n\n오류: "+(err?.message||err));
+  }
+}
 
 function todayStr() { return new Date().toISOString().slice(0,10); }
 function slotToTime(slot) {
@@ -114,14 +147,7 @@ function Spinner() {
   </div>;
 }
 
-async function callAI(prompt) {
-  const res=await fetch("/api/claude",{
-    method:"POST",headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:prompt}]})
-  });
-  const json=await res.json();
-  return json.content?.map(c=>c.text||"").join("")||"오류";
-}
+
 
 // ── 타임테이블 ─────────────────────────────────────────────────────────────────
 function Timetable({data,setData}) {
@@ -192,10 +218,10 @@ function Timetable({data,setData}) {
           const mins=subMins[sub]||0;
           return (
             <button key={sub} onClick={()=>{setPaintSubject(sub);setErasing(false);}} style={{
-              padding:"0.3rem 0.75rem",borderRadius:8,border:`2px solid ${paintSubject===sub&&!erasing?c.bg:"transparent"}`,
-              background:c.light,color:c.text,fontFamily:"'Noto Sans KR',sans-serif",
+              padding:"0.3rem 0.75rem",borderRadius:8,border:`2px solid ${paintSubject===sub&&!erasing?c?.bg:"transparent"}`,
+              background:c?.light,color:c?.text,fontFamily:"'Noto Sans KR',sans-serif",
               fontSize:"0.75rem",fontWeight:700,cursor:"pointer",
-              boxShadow:paintSubject===sub&&!erasing?`0 0 12px ${c.bg}60`:undefined
+              boxShadow:paintSubject===sub&&!erasing?`0 0 12px ${c?.bg}60`:undefined
             }}>
               {sub}{mins>0?` ${Math.floor(mins/60)?Math.floor(mins/60)+"h":""}${mins%60?mins%60+"m":""}`.trim():""}
             </button>
@@ -253,7 +279,7 @@ function Timetable({data,setData}) {
                     }}
                     data-slot={si}
                     style={{width:44,height:32,flexShrink:0,cursor:"crosshair",
-                      background:sub?c.bg+"e0":"transparent",
+                      background:sub?c?.bg+"e0":"transparent",
                       borderLeft:"1px solid #1a1d27",
                       position:"relative",transition:"background 0.04s"}}>
                     {sub&&mi===0&&(
@@ -380,6 +406,81 @@ function PlanCard({plan,onStatus,onEdit,onDelete}) {
       )}
       {plan.status==="failed"&&(
         <div style={{color:"#ef4444",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>→ {nextDay(plan.date)}로 이동됨</div>
+      )}
+    </div>
+  );
+}
+
+// ── 주간/월간 상세 목표 (여러 항목, 과목별, 난이도, 완료여부) ──────────────────────
+function GoalForm({onSave, onClose, editData, scope, scopeKey}) {
+  const [subject,setSubject]=useState(editData?.subject||"수학");
+  const [content,setContent]=useState(editData?.content||"");
+  const [difficulty,setDifficulty]=useState(editData?.difficulty||3);
+  const [note,setNote]=useState(editData?.note||"");
+  const scopeLabel = scope==="week" ? "주간" : "월간";
+  return (
+    <Modal title={editData ? `${scopeLabel} 목표 수정` : `${scopeLabel} 목표 추가`} onClose={onClose}>
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>과목</div>
+        <select value={subject} onChange={e=>setSubject(e.target.value)} style={inp}>
+          {SUBJECTS.map(s=><option key={s}>{s}</option>)}
+          <option value="기타">기타</option>
+          <option value="전체">전체 (과목 무관)</option>
+        </select>
+      </div>
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>{scopeLabel} 목표 내용</div>
+        <textarea value={content} onChange={e=>setContent(e.target.value)} rows={3}
+          style={{...inp,resize:"vertical"}} placeholder={scope==="week" ? "예: 수학 오답노트 XC 유형 전부 재풀이" : "예: 국어 문학 개념 단권화 완성"}/>
+      </div>
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>난이도 — <span style={{color:DIFFICULTY_COLOR[difficulty]}}>{DIFFICULTY_LABEL[difficulty]}</span></div>
+        <input type="range" min={1} max={5} value={difficulty} onChange={e=>setDifficulty(Number(e.target.value))}
+          style={{width:"100%",accentColor:DIFFICULTY_COLOR[difficulty]}}/>
+      </div>
+      <div style={{marginBottom:"1.2rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>메모 (선택)</div>
+        <input value={note} onChange={e=>setNote(e.target.value)} style={inp} placeholder="세부 기준, 참고사항 등"/>
+      </div>
+      <Btn full onClick={()=>{
+        if(!content.trim())return;
+        onSave({id:editData?.id||Date.now(),scope,scopeKey,subject,content,difficulty,note,status:"todo"});
+        onClose();
+      }}>저장</Btn>
+      {editData&&(
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginTop:8,textAlign:"center",fontFamily:"'Noto Sans KR',sans-serif"}}>이 목표는 삭제하려면 목록에서 × 버튼을 눌러줘</div>
+      )}
+    </Modal>
+  );
+}
+
+function GoalCard({goal,onStatus,onEdit,onDelete}) {
+  const c=SUBJECT_COLORS[goal.subject] || {bg:"#6366f1",text:"#a5b4fc"};
+  const statusStyle = {
+    todo:{bg:"#1e2230",color:"#6b7280",label:"진행중"},
+    done:{bg:"#22c55e20",color:"#22c55e",label:"✅ 달성"},
+  }[goal.status]||{bg:"#1e2230",color:"#6b7280",label:"진행중"};
+  return (
+    <div style={{background:"#0a0c12",border:`1px solid ${goal.status==="done"?"#22c55e30":"#1e2230"}`,
+      borderRadius:11,padding:"0.8rem 1rem",marginBottom:6,opacity:goal.status==="done"?0.75:1}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span style={{color:c?.text,fontWeight:800,fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{goal.subject}</span>
+          <span style={{background:statusStyle.bg,color:statusStyle.color,fontSize:"0.68rem",padding:"0.1rem 0.45rem",borderRadius:99,fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>{statusStyle.label}</span>
+          {goal.difficulty&&<span style={{color:DIFFICULTY_COLOR[goal.difficulty],fontSize:"0.66rem",fontFamily:"'Noto Sans KR',sans-serif"}}>난이도 {DIFFICULTY_LABEL[goal.difficulty]}</span>}
+        </div>
+        <div style={{display:"flex",gap:5,flexShrink:0}}>
+          <button onClick={()=>onEdit(goal)} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
+          <button onClick={()=>onDelete(goal.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.8rem"}}>×</button>
+        </div>
+      </div>
+      <div style={{color:goal.status==="done"?"#4b5563":"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,marginBottom:goal.note?5:6,textDecoration:goal.status==="done"?"line-through":"none"}}>{goal.content}</div>
+      {goal.note&&<div style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>📌 {goal.note}</div>}
+      {goal.status==="todo"&&(
+        <button onClick={()=>onStatus(goal.id,"done")} style={{width:"100%",padding:"0.32rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",fontWeight:700,cursor:"pointer"}}>✅ 달성 완료</button>
+      )}
+      {goal.status==="done"&&(
+        <button onClick={()=>onStatus(goal.id,"todo")} style={{width:"100%",padding:"0.32rem",borderRadius:7,border:"1px solid #2a2d3a",background:"transparent",color:"#4b5563",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",cursor:"pointer"}}>되돌리기</button>
       )}
     </div>
   );
@@ -619,21 +720,38 @@ function PlanSystem({data,setData}) {
 }
 
 // ── 오답 등록 ──────────────────────────────────────────────────────────────────
-function WrongForm({onSave,onClose,editData}) {
+function WrongForm({onSave,onClose,editData,onDelete}) {
   const [date,setDate]=useState(editData?.date||todayStr());
   const [subject,setSubject]=useState(editData?.subject||"수학");
-  const [code,setCode]=useState(editData?.code||"XM-C");
+  const [code,setCode]=useState(editData?.code||"XC");
   const [problem,setProblem]=useState(editData?.problem||"");
   const [cause,setCause]=useState(editData?.cause||"");
   const [fix,setFix]=useState(editData?.fix||"");
   const [photo,setPhoto]=useState(editData?.photo||null);
-  const [answerPhoto,setAnswerPhoto]=useState(editData?.answerPhoto||null);
+  const [answerText,setAnswerText]=useState(editData?.answerText||"");
 
   function handlePhoto(e, setter) {
     const file=e.target.files[0]; if(!file)return;
-    if(file.size>4*1024*1024){alert("4MB 이하 사진만 가능해");return;}
+    if(!file.type.startsWith("image/")){alert("이미지 파일만 가능해");return;}
     const reader=new FileReader();
-    reader.onload=ev=>setter(ev.target.result);
+    reader.onload=ev=>{
+      // 큰 사진은 자동으로 축소+압축해서 localStorage 용량 문제를 방지
+      const img=new Image();
+      img.onload=()=>{
+        const MAX_W=1000;
+        const scale=Math.min(1, MAX_W/img.width);
+        const w=Math.round(img.width*scale), h=Math.round(img.height*scale);
+        const canvas=document.createElement("canvas");
+        canvas.width=w; canvas.height=h;
+        const ctx=canvas.getContext("2d");
+        ctx.drawImage(img,0,0,w,h);
+        const compressed=canvas.toDataURL("image/jpeg",0.75);
+        setter(compressed);
+      };
+      img.onerror=()=>{ alert("사진을 불러오지 못했어. 다른 사진으로 시도해줘."); };
+      img.src=ev.target.result;
+    };
+    reader.onerror=()=>{ alert("파일을 읽는 중 오류가 발생했어."); };
     reader.readAsDataURL(file);
   }
 
@@ -653,22 +771,33 @@ function WrongForm({onSave,onClose,editData}) {
         </div>
       </div>
 
-      {/* 오답 코드 — 버튼 선택 */}
+      {/* 오답 코드 — 대분류별로 묶어서 버튼 선택 */}
       <div style={{marginBottom:"0.9rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>오답 코드</div>
-        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-          {Object.entries(ERROR_CODES).map(([k,v])=>(
-            <button key={k} onClick={()=>setCode(k)} style={{
-              padding:"0.3rem 0.65rem",borderRadius:8,cursor:"pointer",
-              border:`1px solid ${code===k?v.color:v.color+"40"}`,
-              background:code===k?v.color+"25":"transparent",
-              color:code===k?v.color:v.color+"99",
-              fontFamily:"'JetBrains Mono',monospace",fontSize:"0.72rem",fontWeight:700
-            }}>{k}</button>
-          ))}
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {["XC","XM","XJ"].map(major=>{
+            const ml=ERROR_MAJOR_LABEL[major];
+            const codesInGroup=Object.entries(ERROR_CODES).filter(([k])=>ERROR_MAJOR[k]===major);
+            return (
+              <div key={major} style={{border:`1px solid ${ml.color}25`,borderRadius:9,padding:"0.5rem 0.6rem",background:`${ml.color}08`}}>
+                <div style={{color:ml.color,fontSize:"0.68rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>{ml.label}</div>
+                <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+                  {codesInGroup.map(([k,v])=>(
+                    <button key={k} onClick={()=>setCode(k)} style={{
+                      padding:"0.3rem 0.65rem",borderRadius:8,cursor:"pointer",
+                      border:`1px solid ${code===k?v.color:v.color+"40"}`,
+                      background:code===k?v.color+"25":"transparent",
+                      color:code===k?v.color:v.color+"99",
+                      fontFamily:"'JetBrains Mono',monospace",fontSize:"0.72rem",fontWeight:700
+                    }}>{k}</button>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
-        <div style={{color:ERROR_CODES[code].color,fontSize:"0.72rem",marginTop:5,fontFamily:"'Noto Sans KR',sans-serif"}}>
-          {ERROR_CODES[code].desc}
+        <div style={{color:ERROR_CODES[code]?.color||"#9ca3af",fontSize:"0.72rem",marginTop:6,fontFamily:"'Noto Sans KR',sans-serif"}}>
+          <strong>{ERROR_CODES[code]?.desc||code}</strong>{ERROR_CODES[code]?.detail?` — ${ERROR_CODES[code].detail}`:""}
         </div>
       </div>
 
@@ -680,23 +809,25 @@ function WrongForm({onSave,onClose,editData}) {
       {/* 사진 */}
       <div style={{marginBottom:"0.9rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>문제 사진 (선택)</div>
-        <input type="file" accept="image/*" onChange={e=>handlePhoto(e,setPhoto)}
-          style={{...inp,padding:"0.4rem 0.6rem",fontSize:"0.78rem",cursor:"pointer"}}/>
+        <label style={{
+          display:"inline-flex",alignItems:"center",gap:6,
+          background:"#111318",border:"1px solid #1e2230",borderRadius:8,
+          padding:"0.55rem 1rem",cursor:"pointer",
+          color:"#9ca3af",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:600
+        }}>
+          📷 {photo?"사진 변경":"사진 선택"}
+          <input type="file" accept="image/*" onChange={e=>handlePhoto(e,setPhoto)} style={{display:"none"}}/>
+        </label>
         {photo&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
           <img src={photo} alt="미리보기" style={{height:60,borderRadius:6,border:"1px solid #1e2230",objectFit:"contain"}}/>
           <button onClick={()=>setPhoto(null)} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>삭제</button>
         </div>}
       </div>
 
-      {/* 정답 사진 */}
+      {/* 정답 */}
       <div style={{marginBottom:"0.9rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>정답/해설 사진 (선택 · 나중에 문제풀이 모드에서 '답 보기'로 확인)</div>
-        <input type="file" accept="image/*" onChange={e=>handlePhoto(e,setAnswerPhoto)}
-          style={{...inp,padding:"0.4rem 0.6rem",fontSize:"0.78rem",cursor:"pointer"}}/>
-        {answerPhoto&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
-          <img src={answerPhoto} alt="정답 미리보기" style={{height:60,borderRadius:6,border:"1px solid #22c55e40",objectFit:"contain"}}/>
-          <button onClick={()=>setAnswerPhoto(null)} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>삭제</button>
-        </div>}
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>정답 (선택 · 문제풀이 모드에서 '답 보기'로 확인)</div>
+        <input value={answerText} onChange={e=>setAnswerText(e.target.value)} style={inp} placeholder="예: ③, x=3, '민중은 우매하다'는 인식 등"/>
       </div>
 
       <div style={{marginBottom:"0.9rem"}}>
@@ -712,21 +843,34 @@ function WrongForm({onSave,onClose,editData}) {
       </div>
 
       <Btn full onClick={()=>{
-        if(!cause.trim()&&!problem.trim())return;
+        if(!cause.trim()&&!problem.trim()&&!photo&&!answerText.trim())return;
         onSave({
-          id:editData?.id||Date.now(),date,subject,code,problem,cause,fix,photo,answerPhoto,
+          id:editData?.id||Date.now(),date,subject,code,problem,cause,fix,photo,answerText,
           failCount:editData?.failCount||0,
           attemptCount:editData?.attemptCount||0,
           solved:editData?.solved||false,
         });
         onClose();
       }}>저장</Btn>
+
+      {editData&&onDelete&&(
+        <button onClick={()=>{
+          if(confirm("이 오답을 삭제할까? 되돌릴 수 없어.")){
+            onDelete(editData.id);
+            onClose();
+          }
+        }} style={{
+          width:"100%",marginTop:8,padding:"0.6rem",borderRadius:9,
+          border:"1px solid #ef444440",background:"#ef444412",color:"#ef4444",
+          fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:700,cursor:"pointer"
+        }}>🗑️ 이 오답 삭제</button>
+      )}
     </Modal>
   );
 }
 
 // ── 오답 폴더 ──────────────────────────────────────────────────────────────────
-function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPractice,onPracticeGroup}) {
+function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPractice,onPracticeGroup,onUpdateCounts}) {
   const [openSubs,setOpenSubs]=useState({});
   const [openCodes,setOpenCodes]=useState({});
   const [viewMode,setViewMode]=useState("folder");
@@ -779,7 +923,7 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
             for(const e of subEntries){if(!byCode[e.code])byCode[e.code]=[];byCode[e.code].push(e);}
             return (
               <div key={sub} style={{marginBottom:6}}>
-                <div style={{background:"#0a0c12",border:`1px solid ${c.bg}30`,borderRadius:12,overflow:"hidden"}}>
+                <div style={{background:"#0a0c12",border:`1px solid ${c?.bg}30`,borderRadius:12,overflow:"hidden"}}>
                   <div onClick={()=>setOpenSubs(s=>({...s,[sub]:!s[sub]}))} style={{padding:"0.85rem 1.1rem",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div style={{display:"flex",alignItems:"center",gap:10}}>
                       <span>{subOpen?"📂":"📁"}</span>
@@ -789,7 +933,7 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
                             onClick={e=>e.stopPropagation()} style={{...inp,width:140,padding:"0.22rem 0.5rem",fontSize:"0.82rem"}}/>
                         :<span style={{color:"#f1f3f9",fontWeight:800,fontSize:"0.9rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{getName(sub)}</span>
                       }
-                      <span style={{background:`${c.bg}20`,color:c.text,fontSize:"0.7rem",padding:"0.1rem 0.45rem",borderRadius:99,fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{subEntries.length}</span>
+                      <span style={{background:`${c?.bg}20`,color:c?.text,fontSize:"0.7rem",padding:"0.1rem 0.45rem",borderRadius:99,fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{subEntries.length}</span>
                     </div>
                     <div style={{display:"flex",gap:8,alignItems:"center"}}>
                       <button onClick={e=>startRename(e,sub,getName(sub))} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
@@ -797,11 +941,11 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
                     </div>
                   </div>
                   {subOpen&&(
-                    <div style={{padding:"0 0.8rem 0.8rem",borderTop:`1px solid ${c.bg}20`}}>
+                    <div style={{padding:"0 0.8rem 0.8rem",borderTop:`1px solid ${c?.bg}20`}}>
                       {Object.entries(byCode).sort((a,b)=>b[1].length-a[1].length).map(([code,codeEntries])=>{
                         const codeKey=sub+"/"+code;
                         const codeOpen=openCodes[codeKey];
-                        const cc=ERROR_CODES[code];
+                        const cc=ERROR_CODES[code]||{color:"#9ca3af",desc:code};
                         return (
                           <div key={code} style={{marginTop:6,background:"#0d0f18",border:`1px solid ${cc.color}20`,borderRadius:10,overflow:"hidden"}}>
                             <div onClick={()=>setOpenCodes(s=>({...s,[codeKey]:!s[codeKey]}))} style={{padding:"0.6rem 0.85rem",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -817,11 +961,14 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
                                 <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{codeEntries.length}개</span>
                               </div>
                               <div style={{display:"flex",gap:6,alignItems:"center"}}>
-                                {onPracticeGroup&&codeEntries.some(x=>x.photo)&&(
-                                  <button onClick={ev=>{ev.stopPropagation();onPracticeGroup(codeEntries.filter(x=>x.photo));}}
+                                {onPracticeGroup&&codeEntries.some(x=>x.photo&&!x.solved)&&(
+                                  <button onClick={ev=>{ev.stopPropagation();onPracticeGroup(codeEntries.filter(x=>x.photo&&!x.solved));}}
                                     style={{background:"#6366f120",border:"1px solid #6366f140",borderRadius:6,color:"#818cf8",cursor:"pointer",fontSize:"0.65rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.15rem 0.5rem",fontWeight:700}}>
-                                    ✏️ 연속풀기
+                                    ✏️ 연속풀기 ({codeEntries.filter(x=>x.photo&&!x.solved).length})
                                   </button>
+                                )}
+                                {onPracticeGroup&&codeEntries.some(x=>x.photo)&&!codeEntries.some(x=>x.photo&&!x.solved)&&(
+                                  <span style={{color:"#22c55e",fontSize:"0.62rem",fontFamily:"'Noto Sans KR',sans-serif"}}>✅ 전부 맞음</span>
                                 )}
                                 <button onClick={e=>startRename(e,codeKey,getName(codeKey))} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.65rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
                                 <span style={{color:"#2d3241",fontSize:"0.7rem"}}>{codeOpen?"▲":"▼"}</span>
@@ -829,7 +976,7 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
                             </div>
                             {codeOpen&&(
                               <div style={{padding:"0 0.65rem 0.65rem",borderTop:`1px solid ${cc.color}15`}}>
-                                {[...codeEntries].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit} onPractice={onPractice}/>)}
+                                {[...codeEntries].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit} onPractice={onPractice} onUpdateCounts={onUpdateCounts}/>)}
                               </div>
                             )}
                           </div>
@@ -855,16 +1002,25 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
             </select>
             <span style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",alignSelf:"center"}}>{filtered.length}개</span>
           </div>
-          {[...filtered].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit} onPractice={onPractice}/>)}
+          {[...filtered].reverse().map(e=><WrongCard key={e.id} e={e} onDelete={onDelete} onEdit={onEdit} onPractice={onPractice} onUpdateCounts={onUpdateCounts}/>)}
         </div>
       )}
     </div>
   );
 }
 
-function WrongCard({e,onDelete,onEdit,onPractice}) {
+function WrongCard({e,onDelete,onEdit,onPractice,onUpdateCounts}) {
   const [open,setOpen]=useState(false);
+  const [editingCounts,setEditingCounts]=useState(false);
+  const [failInput,setFailInput]=useState(e.failCount||0);
+  const [solvedInput,setSolvedInput]=useState(!!e.solved);
   const c=SUBJECT_COLORS[e.subject];
+
+  function saveCounts(){
+    onUpdateCounts(e.id, { failCount: Math.max(0, parseInt(failInput)||0), solved: solvedInput });
+    setEditingCounts(false);
+  }
+
   return (
     <div style={{background:"#0d0f18",border:"1px solid #1e2230",borderRadius:9,marginBottom:5,overflow:"hidden"}}>
       <div onClick={()=>setOpen(o=>!o)} style={{padding:"0.65rem 0.9rem",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -872,6 +1028,7 @@ function WrongCard({e,onDelete,onEdit,onPractice}) {
           <span style={{color:c?.text||"#a5b4fc",fontSize:"0.75rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif"}}>{e.subject}</span>
           <Tag code={e.code}/>
           {e.photo&&<span style={{fontSize:"0.7rem"}}>📷</span>}
+          {e.solved&&<span style={{color:"#22c55e",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,background:"#22c55e18",padding:"0.05rem 0.4rem",borderRadius:99}}>✅ 맞음</span>}
           {e.failCount>0&&<span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>❌×{e.failCount}</span>}
           <span style={{color:"#6b7280",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{e.problem||e.cause.slice(0,25)+(e.cause.length>25?"...":"")}</span>
         </div>
@@ -887,7 +1044,34 @@ function WrongCard({e,onDelete,onEdit,onPractice}) {
         <div style={{padding:"0 0.9rem 0.85rem",borderTop:"1px solid #1a1d27"}}>
           {e.cause&&<div style={{color:"#9ca3af",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.75,marginTop:8}}>{e.cause}</div>}
           {e.fix&&<div style={{color:"#10b981",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",marginTop:5}}>→ {e.fix}</div>}
+          {e.answerText&&<div style={{color:"#6366f1",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",marginTop:5}}>정답: {e.answerText}</div>}
           {e.photo&&<img src={e.photo} alt="오답" style={{marginTop:8,maxWidth:"100%",maxHeight:220,borderRadius:8,border:"1px solid #1e2230",objectFit:"contain",display:"block"}}/>}
+
+          {/* 풀이 기록 수정 */}
+          {onUpdateCounts && (
+            <div style={{marginTop:10,paddingTop:8,borderTop:"1px solid #1a1d27"}}>
+              {!editingCounts ? (
+                <button onClick={()=>{setFailInput(e.failCount||0);setSolvedInput(!!e.solved);setEditingCounts(true);}} style={{
+                  background:"none",border:"1px solid #2a2d3a",borderRadius:7,color:"#6b7280",cursor:"pointer",
+                  fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.25rem 0.6rem"
+                }}>풀이 기록 수정 (틀림 {e.failCount||0}회{e.solved?" · 맞음":""})</button>
+              ) : (
+                <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                  <label style={{display:"flex",alignItems:"center",gap:5,fontSize:"0.75rem",color:"#9ca3af",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                    틀린 횟수
+                    <input type="number" min={0} value={failInput} onChange={ev=>setFailInput(ev.target.value)}
+                      style={{width:52,background:"#111318",border:"1px solid #2a2d3a",borderRadius:6,color:"#e8eaf0",padding:"0.2rem 0.4rem",fontSize:"0.78rem"}}/>
+                  </label>
+                  <label style={{display:"flex",alignItems:"center",gap:5,fontSize:"0.75rem",color:"#9ca3af",fontFamily:"'Noto Sans KR',sans-serif",cursor:"pointer"}}>
+                    <input type="checkbox" checked={solvedInput} onChange={ev=>setSolvedInput(ev.target.checked)}/>
+                    맞음 표시
+                  </label>
+                  <button onClick={saveCounts} style={{background:"#22c55e18",border:"1px solid #22c55e40",borderRadius:6,color:"#22c55e",cursor:"pointer",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.2rem 0.6rem",fontWeight:700}}>저장</button>
+                  <button onClick={()=>setEditingCounts(false)} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif"}}>취소</button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -898,30 +1082,20 @@ function WrongCard({e,onDelete,onEdit,onPractice}) {
 // ── 문제풀이 모드 (사진 + 필기 + 답 가리기) ────────────────────────────────────
 function DrawingCanvas({bgImage, height=380}) {
   const canvasRef = useRef(null);
-  const imgRef = useRef(null);
+  const containerRef = useRef(null);
   const [drawing,setDrawing]=useState(false);
   const [color,setColor]=useState("#ef4444");
   const [lineWidth,setLineWidth]=useState(3);
   const [tool,setTool]=useState("pen"); // pen | eraser
   const lastPos = useRef(null);
 
+  // 캔버스는 완전히 투명한 필기 레이어. 배경 이미지는 별도 <img>로 그 아래 깔림.
   useEffect(()=>{
     const canvas=canvasRef.current;
     if(!canvas)return;
     const ctx=canvas.getContext("2d");
+    // 실제 픽셀 해상도를 표시 크기에 맞춤 (레티나 대응 생략, 640 고정폭 사용)
     ctx.clearRect(0,0,canvas.width,canvas.height);
-    if(bgImage){
-      const img=new Image();
-      img.onload=()=>{
-        // fit image into canvas keeping aspect ratio
-        const scale=Math.min(canvas.width/img.width, canvas.height/img.height);
-        const w=img.width*scale, h=img.height*scale;
-        const x=(canvas.width-w)/2, y=(canvas.height-h)/2;
-        ctx.drawImage(img,x,y,w,h);
-        imgRef.current={x,y,w,h};
-      };
-      img.src=bgImage;
-    }
   },[bgImage]);
 
   function getPos(e){
@@ -943,9 +1117,11 @@ function DrawingCanvas({bgImage, height=380}) {
     const canvas=canvasRef.current;
     const ctx=canvas.getContext("2d");
     const pos=getPos(e);
+    // 지우개도 destination-out을 쓰되, 캔버스 자체가 투명 필기 레이어라
+    // 배경 이미지는 절대 지워지지 않음 (별도 <img> 레이어이므로)
     ctx.globalCompositeOperation = tool==="eraser" ? "destination-out" : "source-over";
     ctx.strokeStyle=color;
-    ctx.lineWidth=tool==="eraser"?20:lineWidth;
+    ctx.lineWidth=tool==="eraser"?24:lineWidth;
     ctx.lineCap="round";
     ctx.lineJoin="round";
     ctx.beginPath();
@@ -957,14 +1133,10 @@ function DrawingCanvas({bgImage, height=380}) {
   function end(){ setDrawing(false); lastPos.current=null; }
 
   function clearDrawing(){
+    // 필기 레이어만 지움. 배경 이미지는 별도 레이어라 영향 없음.
     const canvas=canvasRef.current;
     const ctx=canvas.getContext("2d");
     ctx.clearRect(0,0,canvas.width,canvas.height);
-    if(bgImage&&imgRef.current){
-      const img=new Image();
-      img.onload=()=>{ ctx.drawImage(img,imgRef.current.x,imgRef.current.y,imgRef.current.w,imgRef.current.h); };
-      img.src=bgImage;
-    }
   }
 
   const PEN_COLORS=["#ef4444","#3b82f6","#22c55e","#000000","#f59e0b"];
@@ -988,21 +1160,37 @@ function DrawingCanvas({bgImage, height=380}) {
           background:tool==="eraser"?"#f59e0b20":"#111318",
           color:tool==="eraser"?"#f59e0b":"#6b7280",
           fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",fontWeight:700
-        }}>지우개</button>
+        }}>지우개 (필기만 지움)</button>
         <div style={{display:"flex",gap:3,alignItems:"center"}}>
           {[2,4,7].map(w=>(
-            <button key={w} onClick={()=>setLineWidth(w)} style={{
+            <button key={w} onClick={()=>{setLineWidth(w);setTool("pen");}} style={{
               width:26,height:26,borderRadius:6,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",
               border:lineWidth===w?"1px solid #6366f1":"1px solid #2a2d3a",background:lineWidth===w?"#6366f120":"#111318"
             }}><div style={{width:w+2,height:w+2,borderRadius:"50%",background:"#9ca3af"}}/></button>
           ))}
         </div>
-        <button onClick={clearDrawing} style={{marginLeft:"auto",padding:"0.3rem 0.7rem",borderRadius:7,border:"1px solid #2a2d3a",background:"#111318",color:"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",cursor:"pointer"}}>필기 지우기</button>
+        <button onClick={clearDrawing} style={{marginLeft:"auto",padding:"0.3rem 0.7rem",borderRadius:7,border:"1px solid #2a2d3a",background:"#111318",color:"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",cursor:"pointer"}}>필기 전체 지우기</button>
       </div>
-      <canvas ref={canvasRef} width={640} height={height}
-        onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
-        onTouchStart={start} onTouchMove={move} onTouchEnd={end}
-        style={{width:"100%",height:height,background:"#0d0f18",borderRadius:10,border:"1px solid #1e2230",touchAction:"none",cursor:"crosshair",display:"block"}}/>
+
+      {/* 배경 이미지 + 필기 캔버스를 겹친 컨테이너 */}
+      <div ref={containerRef} style={{
+        position:"relative", width:"100%", height, borderRadius:10, overflow:"hidden",
+        background:"#0d0f18", border:"1px solid #1e2230"
+      }}>
+        {bgImage && (
+          <img src={bgImage} alt="문제" draggable={false} style={{
+            position:"absolute", inset:0, width:"100%", height:"100%",
+            objectFit:"contain", pointerEvents:"none", userSelect:"none"
+          }}/>
+        )}
+        <canvas ref={canvasRef} width={640} height={height}
+          onMouseDown={start} onMouseMove={move} onMouseUp={end} onMouseLeave={end}
+          onTouchStart={start} onTouchMove={move} onTouchEnd={end}
+          style={{
+            position:"absolute", inset:0, width:"100%", height:"100%",
+            touchAction:"none", cursor:"crosshair", display:"block", background:"transparent"
+          }}/>
+      </div>
     </div>
   );
 }
@@ -1067,12 +1255,14 @@ function PracticeMode({queue, onExit, onResult}) {
           <Btn full color="#f59e0b" onClick={()=>setShowAnswer(true)}>👁️ 답 보기</Btn>
         ) : (
           <div style={{marginBottom:"1rem"}}>
-            <div style={{color:"#22c55e",fontSize:"0.7rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>정답 / 해설</div>
-            {current.answerPhoto ? (
-              <img src={current.answerPhoto} alt="정답" style={{width:"100%",borderRadius:10,border:"1px solid #22c55e30"}}/>
+            <div style={{color:"#22c55e",fontSize:"0.7rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>정답</div>
+            {current.answerText ? (
+              <div style={{background:"#0a0c12",border:"1px solid #22c55e30",borderRadius:10,padding:"1rem",color:"#e8eaf0",fontSize:"1rem",fontWeight:700,fontFamily:"'Noto Sans KR',sans-serif"}}>
+                {current.answerText}
+              </div>
             ) : (
               <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"1rem",color:"#4b5563",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
-                등록된 정답 사진이 없어. 오답 수정에서 추가할 수 있어.
+                등록된 정답이 없어. 오답 수정에서 추가할 수 있어.
               </div>
             )}
             {current.cause&&<div style={{marginTop:8,padding:"0.7rem 0.9rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:9,color:"#9ca3af",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
@@ -1103,98 +1293,127 @@ function PracticeMode({queue, onExit, onResult}) {
   );
 }
 
-// ── AI 분석 ────────────────────────────────────────────────────────────────────
-function AIAnalysis({data,period,wrongsOnly,onClose}) {
-  const [loading,setLoading]=useState(true);
-  const [initText,setInitText]=useState("");
-  const [messages,setMessages]=useState([]);
-  const [input,setInput]=useState("");
-  const [chatLoading,setChatLoading]=useState(false);
+// ── 기간별 리포트 내보내기 ──────────────────────────────────────────────────────
+function buildReportText(data, period) {
+  const now = new Date();
+  const cutoff = new Date();
+  const pLabel = {day:"1일", week:"1주", month:"1개월", quarter:"3개월"}[period];
+  if(period==="day") cutoff.setDate(now.getDate()-1);
+  else if(period==="week") cutoff.setDate(now.getDate()-7);
+  else if(period==="month") cutoff.setMonth(now.getMonth()-1);
+  else cutoff.setMonth(now.getMonth()-3);
 
-  const pLabel=period==="week"?"주간":period==="month"?"월간":"3개월";
-
-  function buildContext() {
-    const now=new Date();
-    const cutoff=new Date();
-    if(period==="week")cutoff.setDate(now.getDate()-7);
-    else if(period==="month")cutoff.setMonth(now.getMonth()-1);
-    else cutoff.setMonth(now.getMonth()-3);
-
-    // 공부 시간 집계
-    const subMinsTotal={};
-    let totalMins=0;
-    for(const [dateStr,slots] of Object.entries(data.timetable)){
-      if(new Date(dateStr)<cutoff)continue;
-      const sm=calcSubjectMinutes(slots);
-      for(const [s,m] of Object.entries(sm)){subMinsTotal[s]=(subMinsTotal[s]||0)+m;totalMins+=m;}
-    }
-
-    // 오답 집계
-    const wrongs=data.wrongs.filter(w=>new Date(w.date)>=cutoff);
-    const byCode={},bySubject={};
-    for(const w of wrongs){byCode[w.code]=(byCode[w.code]||0)+1;bySubject[w.subject]=(bySubject[w.subject]||0)+1;}
-
-    return `== ${pLabel} 학습 데이터 ==
-총 공부시간: ${Math.floor(totalMins/60)}h ${totalMins%60}m
-과목별: ${Object.entries(subMinsTotal).sort((a,b)=>b[1]-a[1]).map(([s,m])=>`${s} ${Math.floor(m/60)}h${m%60}m`).join(", ")||"없음"}
-오답(${wrongs.length}개) 코드별: ${Object.entries(byCode).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k}:${v}`).join(", ")||"없음"}
-오답 과목별: ${Object.entries(bySubject).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k}:${v}`).join(", ")||"없음"}
-최근 오답: ${wrongs.slice(-10).map(w=>`[${w.subject}/${w.code}]${w.cause?` ${w.cause}`:""}`).join(" | ")||"없음"}`;
+  // 타임테이블 집계
+  const subMinsTotal={};
+  let totalMins=0;
+  const dailyMins={};
+  for(const [dateStr,slots] of Object.entries(data.timetable||{})){
+    if(new Date(dateStr)<cutoff) continue;
+    const sm=calcSubjectMinutes(slots);
+    const dayTotal=calcMinutes(slots);
+    if(dayTotal>0) dailyMins[dateStr]=dayTotal;
+    for(const [s,m] of Object.entries(sm)){subMinsTotal[s]=(subMinsTotal[s]||0)+m;totalMins+=m;}
   }
 
-  const SYS="너는 대한민국 전교 최상위권 달성을 목표로 하는 고등학생의 전담 학습 코치야. 데이터 기반으로만 분석하고, 근본 원인까지 파고들고, 즉시 실행 가능한 처방을 줘. 냉정하고 직설적으로. 오답코드: XM-R독해 XM-C개념 XS선지조건 XD주의실수 XR처리오류 XT-T시간배분 XT-M전략메타인지 XF감풀이";
+  // 오답 집계
+  const wrongs=(data.wrongs||[]).filter(w=>new Date(w.date)>=cutoff);
+  const byCode={}, bySubject={}, byCodeSubject={};
+  for(const w of wrongs){
+    byCode[w.code]=(byCode[w.code]||0)+1;
+    bySubject[w.subject]=(bySubject[w.subject]||0)+1;
+    const k=w.subject+"/"+w.code;
+    byCodeSubject[k]=(byCodeSubject[k]||0)+1;
+  }
 
-  useEffect(()=>{
-    const ctx=buildContext();
-    if(!ctx.includes("h "))  {setInitText("데이터가 없어. 먼저 타임테이블을 채워줘.");setLoading(false);return;}
-    callAI(SYS+"\n\n"+ctx+"\n\n["+pLabel+" 종합 요약] 핵심 수치와 전반적 평가\n[시간 배분 분석] 과목별 투자 시간 적절성, 불균형 과목\n[황금 시간대] 어떤 과목을 언제 공부하면 좋은지\n[오답 패턴] 지배적 오류, 반복 실수, 즉시 처방\n[병목 진단] 지금 나를 가장 붙잡는 장애물 3가지\n[전교 최상위권 대비] 이 패턴 대비 최상위권과의 차이\n[다음 "+pLabel+" 목표] 측정 가능한 목표 3가지\n\n마지막에: 어떤 부분을 더 파고들까?")
-      .then(t=>{setInitText(t);setMessages([{role:"assistant",content:t}]);setLoading(false);})
-      .catch(()=>{setInitText("AI 오류");setLoading(false);});
-  },[]);
+  // 계획 집계
+  const plans=(data.plans2||[]).filter(p=>new Date(p.date)>=cutoff);
+  const planDone=plans.filter(p=>p.status==="done").length;
+  const planFailed=plans.filter(p=>p.status==="failed").length;
+  const planTodo=plans.filter(p=>p.status==="todo").length;
 
-  async function send() {
-    if(!input.trim()||chatLoading)return;
-    const um={role:"user",content:input.trim()};
-    const next=[...messages,um];
-    setMessages(next);setInput("");setChatLoading(true);
-    try{
-      const res=await fetch("/api/claude",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,
-          messages:[{role:"user",content:SYS+"\n\n"+buildContext()+"\n\n위 데이터 기반으로 답해줘."},{role:"assistant",content:initText},...next.slice(1)]})});
-      const json=await res.json();
-      setMessages(m=>[...m,{role:"assistant",content:json.content?.map(c=>c.text||"").join("")||"오류"}]);
-    }catch{setMessages(m=>[...m,{role:"assistant",content:"오류. 다시 시도해줘."}]);}
-    setChatLoading(false);
+  const lines=[];
+  lines.push(`=== STUDY_OS 리포트 : 최근 ${pLabel} ===`);
+  lines.push(`생성일: ${todayStr()}`);
+  lines.push("");
+  lines.push(`[학습 시간]`);
+  lines.push(`총 공부시간: ${Math.floor(totalMins/60)}시간 ${totalMins%60}분`);
+  lines.push(`기록된 날짜 수: ${Object.keys(dailyMins).length}일`);
+  if(Object.keys(dailyMins).length>0){
+    const avgDay=totalMins/Object.keys(dailyMins).length;
+    lines.push(`일 평균: ${Math.floor(avgDay/60)}시간 ${Math.round(avgDay%60)}분`);
+  }
+  lines.push("");
+  lines.push(`[과목별 시간]`);
+  if(Object.keys(subMinsTotal).length===0) lines.push("기록 없음");
+  else Object.entries(subMinsTotal).sort((a,b)=>b[1]-a[1]).forEach(([s,m])=>{
+    lines.push(`- ${s}: ${Math.floor(m/60)}시간 ${m%60}분 (${((m/totalMins)*100).toFixed(0)}%)`);
+  });
+  lines.push("");
+  lines.push(`[오답 현황] 총 ${wrongs.length}개`);
+  lines.push(`오답 코드별:`);
+  if(Object.keys(byCode).length===0) lines.push("- 없음");
+  else Object.entries(byCode).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{
+    const desc=ERROR_CODES[k]?.desc||"";
+    lines.push(`- ${k} (${desc}): ${v}개 (${((v/wrongs.length)*100).toFixed(0)}%)`);
+  });
+  lines.push("");
+  lines.push(`과목별 오답:`);
+  if(Object.keys(bySubject).length===0) lines.push("- 없음");
+  else Object.entries(bySubject).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{
+    lines.push(`- ${k}: ${v}개`);
+  });
+  lines.push("");
+  lines.push(`과목x코드 조합 (가장 많이 틀린 유형):`);
+  const topCombos=Object.entries(byCodeSubject).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  if(topCombos.length===0) lines.push("- 없음");
+  else topCombos.forEach(([k,v])=>lines.push(`- ${k}: ${v}개`));
+  lines.push("");
+  lines.push(`[오답 상세 목록]`);
+  if(wrongs.length===0) lines.push("- 없음");
+  else wrongs.slice().reverse().forEach(w=>{
+    lines.push(`- [${w.date}] ${w.subject}/${w.code}${w.problem?" ("+w.problem+")":""}${w.cause?" : "+w.cause:""}${w.answerText?" [정답: "+w.answerText+"]":""}${w.fix?" → "+w.fix:""}${w.failCount?` [누적틀림 ${w.failCount}회]`:""}`);
+  });
+  lines.push("");
+  lines.push(`[계획 수행 현황]`);
+  lines.push(`총 계획: ${plans.length}개 | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개`);
+  if(plans.length>0) lines.push(`달성률: ${Math.round((planDone/plans.length)*100)}%`);
+  lines.push("");
+  lines.push(`=== 리포트 끝 ===`);
+
+  return lines.join("\n");
+}
+
+function ReportExport({data, onClose}) {
+  const [period,setPeriod]=useState("week");
+  const text = buildReportText(data, period);
+
+  function copyText(){
+    navigator.clipboard?.writeText(text).then(()=>{
+      alert("복사됐어! Claude 채팅에 붙여넣기 해줘.");
+    }).catch(()=>{
+      alert("복사 실패. 아래 텍스트를 직접 선택해서 복사해줘.");
+    });
   }
 
   return (
-    <Modal title={`AI ${pLabel} 분석`} onClose={onClose} wide>
-      {loading?<Spinner/>:(
-        <div>
-          <div style={{maxHeight:400,overflowY:"auto",display:"flex",flexDirection:"column",gap:10,marginBottom:"1rem"}}>
-            {messages.map((m,i)=>(
-              <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
-                <div style={{maxWidth:"88%",padding:"0.85rem 1rem",borderRadius:12,
-                  background:m.role==="user"?"#6366f1":"#111318",
-                  border:m.role==="user"?"none":"1px solid #1e2230",
-                  color:m.role==="user"?"white":"#c9cbd4",
-                  fontSize:"0.82rem",lineHeight:1.85,fontFamily:"'Noto Sans KR',sans-serif",whiteSpace:"pre-wrap"}}>{m.content}</div>
-              </div>
-            ))}
-            {chatLoading&&<div style={{display:"flex",gap:5}}>{[0,1,2].map(i=><div key={i} style={{width:6,height:6,borderRadius:"50%",background:"#6366f1",animation:`pulse 1.2s ${i*0.2}s infinite`}}/>)}</div>}
-          </div>
-          <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:8}}>
-            {["수학 집중 분석","오답 패턴 처방","이번 주 약점","시간 배분 개선"].map(q=>(
-              <button key={q} onClick={()=>setInput(q)} style={{padding:"0.26rem 0.6rem",borderRadius:99,border:"1px solid #2a2d3a",background:"#111318",color:"#6b7280",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",cursor:"pointer"}}>{q}</button>
-            ))}
-          </div>
-          <div style={{display:"flex",gap:8}}>
-            <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()}
-              style={{...inp,flex:1}} placeholder="더 파고들 부분을 말해줘"/>
-            <Btn onClick={send} disabled={chatLoading||!input.trim()}>전송</Btn>
-          </div>
-        </div>
-      )}
+    <Modal title="📋 기간별 리포트 내보내기" onClose={onClose} wide>
+      <div style={{display:"flex",gap:5,marginBottom:"1rem",flexWrap:"wrap"}}>
+        {[["day","1일"],["week","1주"],["month","1개월"],["quarter","3개월"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setPeriod(v)} style={{
+            padding:"0.4rem 0.9rem",borderRadius:8,border:"none",cursor:"pointer",
+            background:period===v?"#6366f1":"#111318",
+            color:period===v?"white":"#6b7280",
+            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:700
+          }}>{l}</button>
+        ))}
+      </div>
+      <p style={{color:"#6b7280",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"0.8rem",lineHeight:1.6}}>
+        아래 텍스트를 복사해서 Claude 채팅에 붙여넣으면, 학습 그래프 분석과 자주 틀린 오류 유형을 짚어줄 수 있어.
+      </p>
+      <Btn full onClick={copyText}>📋 텍스트 복사하기</Btn>
+      <textarea readOnly value={text} rows={16}
+        style={{...inp,marginTop:"1rem",resize:"vertical",fontSize:"0.72rem",color:"#9ca3af",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6}}
+        onFocus={e=>e.target.select()}/>
     </Modal>
   );
 }
@@ -1252,6 +1471,29 @@ function BackupModal({data,onImport,onClose}) {
 }
 
 
+// ── 주간/월간 목표 배너 ──────────────────────────────────────────────────────────
+// ── 주간/월간 목표 배너 (미래 주/달로 이동하며 목표 설정 가능) ────────────────────
+function addWeeks(dateStr, n) {
+  const d = new Date(dateStr); d.setDate(d.getDate() + n*7);
+  return d.toISOString().slice(0,10);
+}
+function addMonths(dateStr, n) {
+  const d = new Date(dateStr); d.setMonth(d.getMonth() + n);
+  return d.toISOString().slice(0,10);
+}
+function weekRangeLabel(dateStr) {
+  const d = new Date(dateStr);
+  const day = d.getDay();
+  const mon = new Date(d); mon.setDate(d.getDate() - (day===0?6:day-1));
+  const sun = new Date(mon); sun.setDate(mon.getDate()+6);
+  const fmt = x => `${x.getMonth()+1}/${x.getDate()}`;
+  return `${fmt(mon)} ~ ${fmt(sun)}`;
+}
+function monthRangeLabel(dateStr) {
+  const d = new Date(dateStr);
+  return `${d.getFullYear()}년 ${d.getMonth()+1}월`;
+}
+
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
 function ScheduleView({data,setData,initDate}) {
   const [date,setDate]=useState(initDate||todayStr());
@@ -1261,6 +1503,8 @@ function ScheduleView({data,setData,initDate}) {
   const [planModal,setPlanModal]=useState(null);
   const [editPlan,setEditPlan]=useState(null);
   const [planView,setPlanView]=useState("day"); // day | week | month
+  const [goalModalOpen,setGoalModalOpen]=useState(false);
+  const [editGoal,setEditGoal]=useState(null);
 
   const hours=Array.from({length:TOTAL_HOURS},(_,i)=>(START_HOUR+i)%24);
   const daySlots=data.timetable[date]||{};
@@ -1299,6 +1543,21 @@ function ScheduleView({data,setData,initDate}) {
       return {...d,plans2:list};});
   }
 
+  function saveGoal(g){
+    setData(d=>{
+      const list=[...(d.goalItems||[])];
+      const idx=list.findIndex(x=>x.id===g.id);
+      if(idx>=0) list[idx]=g; else list.push(g);
+      return {...d,goalItems:list};
+    });
+  }
+  function setGoalStatus(id,status){
+    setData(d=>({...d,goalItems:(d.goalItems||[]).map(g=>g.id===id?{...g,status}:g)}));
+  }
+  function deleteGoal(id){
+    setData(d=>({...d,goalItems:(d.goalItems||[]).filter(g=>g.id!==id)}));
+  }
+
   return (
     <div>
       {/* 날짜 + 컨트롤 */}
@@ -1325,10 +1584,10 @@ function ScheduleView({data,setData,initDate}) {
           const c=SUBJECT_COLORS[sub];const mins=subMins[sub]||0;
           return <button key={sub} onClick={()=>{setPaintSubject(sub);setErasing(false);}} style={{
             padding:"0.25rem 0.65rem",borderRadius:7,
-            border:`2px solid ${paintSubject===sub&&!erasing?c.bg:"transparent"}`,
-            background:c.light,color:c.text,fontFamily:"'Noto Sans KR',sans-serif",
+            border:`2px solid ${paintSubject===sub&&!erasing?c?.bg:"transparent"}`,
+            background:c?.light,color:c?.text,fontFamily:"'Noto Sans KR',sans-serif",
             fontSize:"0.72rem",fontWeight:700,cursor:"pointer",
-            boxShadow:paintSubject===sub&&!erasing?`0 0 10px ${c.bg}55`:undefined
+            boxShadow:paintSubject===sub&&!erasing?`0 0 10px ${c?.bg}55`:undefined
           }}>{sub}{mins>0?" "+Math.floor(mins/60)+"h"+(mins%60?mins%60+"m":""):""}</button>;
         })}
       </div>
@@ -1365,7 +1624,7 @@ function ScheduleView({data,setData,initDate}) {
                     onTouchMove={e=>{e.preventDefault();const t=e.touches[0];const el=document.elementFromPoint(t.clientX,t.clientY);if(el?.dataset?.slot)handleEnter(Number(el.dataset.slot));}}
                     data-slot={si}
                     style={{width:36,height:28,flexShrink:0,cursor:"crosshair",
-                      background:sub?c.bg+"e0":"transparent",borderLeft:"1px solid #1a1d27",
+                      background:sub?c?.bg+"e0":"transparent",borderLeft:"1px solid #1a1d27",
                       position:"relative",transition:"background 0.04s"}}>
                     {sub&&mi===0&&<span style={{position:"absolute",left:1,top:1,fontSize:"0.5rem",color:"white",
                       fontFamily:"'Noto Sans KR',sans-serif",pointerEvents:"none",whiteSpace:"nowrap",overflow:"hidden",maxWidth:32,opacity:0.9}}>{sub}</span>}
@@ -1386,7 +1645,10 @@ function ScheduleView({data,setData,initDate}) {
                   fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.7rem",fontWeight:700}}>{l}</button>
               ))}
             </div>
-            <Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 추가</Btn>
+            <Btn small color="#6366f1" onClick={()=>{
+              if(planView==="day"){ setEditPlan(null); setPlanModal("add"); }
+              else { setEditGoal(null); setGoalModalOpen(true); }
+            }}>+ 추가</Btn>
           </div>
 
           {planView==="day"&&(
@@ -1413,8 +1675,21 @@ function ScheduleView({data,setData,initDate}) {
             const weekDates=Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
             const DAY_KO=["월","화","수","목","금","토","일"];
             const weekPlans=(data.plans2||[]).filter(p=>weekDates.includes(p.date));
+            const weekKey=getWeekKey(date);
+            const weekGoals=(data.goalItems||[]).filter(g=>g.scope==="week"&&g.scopeKey===weekKey);
             return (
               <div>
+                {/* 이번 주 목표 */}
+                <div style={{background:"#6366f112",border:"1px solid #6366f130",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:10}}>
+                  <div style={{color:"#6366f1",fontSize:"0.7rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>
+                    🎯 이번 주 목표 {weekGoals.length>0&&`(${weekGoals.filter(g=>g.status==="done").length}/${weekGoals.length})`}
+                  </div>
+                  {weekGoals.length===0
+                    ?<div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>목표 없음 — 위 "+ 추가"로 세워봐</div>
+                    :weekGoals.map(g=><GoalCard key={g.id} goal={g} onStatus={setGoalStatus} onEdit={g=>{setEditGoal(g);setGoalModalOpen(true);}} onDelete={deleteGoal}/>)
+                  }
+                </div>
+
                 <div style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>
                   이번 주 계획 <span style={{color:"#6366f1",fontWeight:700}}>{weekPlans.length}개</span>
                   <span style={{color:"#22c55e",marginLeft:6}}>✅{weekPlans.filter(p=>p.status==="done").length}</span>
@@ -1445,8 +1720,21 @@ function ScheduleView({data,setData,initDate}) {
             const done=monthPlans.filter(p=>p.status==="done").length;
             const failed=monthPlans.filter(p=>p.status==="failed").length;
             const rate=monthPlans.length>0?Math.round((done/monthPlans.length)*100):0;
+            const monthKey=getMonthKey(date);
+            const monthGoals=(data.goalItems||[]).filter(g=>g.scope==="month"&&g.scopeKey===monthKey);
             return (
               <div>
+                {/* 이번 달 목표 */}
+                <div style={{background:"#f59e0b12",border:"1px solid #f59e0b30",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:10}}>
+                  <div style={{color:"#f59e0b",fontSize:"0.7rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>
+                    🏁 이번 달 목표 {monthGoals.length>0&&`(${monthGoals.filter(g=>g.status==="done").length}/${monthGoals.length})`}
+                  </div>
+                  {monthGoals.length===0
+                    ?<div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>목표 없음 — 위 "+ 추가"로 세워봐</div>
+                    :monthGoals.map(g=><GoalCard key={g.id} goal={g} onStatus={setGoalStatus} onEdit={g=>{setEditGoal(g);setGoalModalOpen(true);}} onDelete={deleteGoal}/>)
+                  }
+                </div>
+
                 <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:"1rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.8rem"}}>
                   {[["총",monthPlans.length,"#6b7280"],["완료",done,"#22c55e"],["실패",failed,"#ef4444"],["달성률",rate+"%","#f59e0b"]].map(([l,v,c])=>(
                     <div key={l} style={{textAlign:"center"}}>
@@ -1474,6 +1762,16 @@ function ScheduleView({data,setData,initDate}) {
           onSave={p=>{savePlan(p);setPlanModal(null);setEditPlan(null);}}
           onClose={()=>{setPlanModal(null);setEditPlan(null);}}/>
       )}
+
+      {goalModalOpen&&(
+        <GoalForm
+          editData={editGoal}
+          scope={planView==="month"?"month":"week"}
+          scopeKey={planView==="month"?getMonthKey(date):getWeekKey(date)}
+          onSave={g=>{saveGoal(g);setGoalModalOpen(false);setEditGoal(null);}}
+          onClose={()=>{setGoalModalOpen(false);setEditGoal(null);}}
+        />
+      )}
     </div>
   );
 }
@@ -1482,6 +1780,7 @@ function ScheduleView({data,setData,initDate}) {
 function CalendarView({data,setData,onSelectDate}) {
   const [year,setYear]=useState(new Date().getFullYear());
   const [month,setMonth]=useState(new Date().getMonth());
+  const [selectedDay,setSelectedDay]=useState(null); // 상세보기용, null이면 안 보임
   const today=todayStr();
   const MONTH_KO=["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
   const firstDay=new Date(year,month,1).getDay();
@@ -1490,8 +1789,21 @@ function CalendarView({data,setData,onSelectDate}) {
   for(let i=0;i<(firstDay===0?6:firstDay-1);i++)cells.push(null);
   for(let d=1;d<=daysInMonth;d++)cells.push(d);
   function ds(d){return `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
-  function prev(){if(month===0){setMonth(11);setYear(y=>y-1);}else setMonth(m=>m-1);}
-  function next(){if(month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1);}
+  function prev(){if(month===0){setMonth(11);setYear(y=>y-1);}else setMonth(m=>m-1);setSelectedDay(null);}
+  function next(){if(month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1);setSelectedDay(null);}
+
+  const monthKey=`${year}-${String(month+1).padStart(2,"0")}`;
+  const monthGoalItems=(data.goalItems||[]).filter(g=>g.scope==="month"&&g.scopeKey===monthKey);
+
+  // 이번 달에 걸친 모든 주 목표 모으기 (달 1일~말일 각각의 주차 키를 모아 중복 제거)
+  const weekKeysInMonth=[...new Set(Array.from({length:daysInMonth},(_,i)=>getWeekKey(ds(i+1))))];
+  const weekGoalGroups=weekKeysInMonth.map(wk=>({
+    key:wk,
+    items:(data.goalItems||[]).filter(g=>g.scope==="week"&&g.scopeKey===wk)
+  })).filter(g=>g.items.length>0);
+
+  const selDateStr = selectedDay ? ds(selectedDay) : null;
+  const selDayPlans = selDateStr ? (data.plans2||[]).filter(p=>p.date===selDateStr) : [];
 
   return (
     <div>
@@ -1500,6 +1812,42 @@ function CalendarView({data,setData,onSelectDate}) {
         <span style={{color:"#f1f3f9",fontWeight:800,fontSize:"1rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{year}년 {MONTH_KO[month]}</span>
         <button onClick={next} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer",fontSize:"1.2rem",padding:"0.3rem 0.6rem"}}>›</button>
       </div>
+
+      {/* 이번 달 월간 목표 요약 */}
+      {monthGoalItems.length>0 && (
+        <div style={{background:"#f59e0b12",border:"1px solid #f59e0b30",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:8}}>
+          <div style={{color:"#f59e0b",fontSize:"0.68rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>
+            🏁 이 달의 목표 ({monthGoalItems.filter(g=>g.status==="done").length}/{monthGoalItems.length})
+          </div>
+          {monthGoalItems.map(g=>(
+            <div key={g.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.2rem 0",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+              <span style={{color:g.status==="done"?"#22c55e":"#4b5563"}}>{g.status==="done"?"✅":"○"}</span>
+              <span style={{color:SUBJECT_COLORS[g.subject]?.text||"#a5b4fc",fontWeight:700}}>{g.subject}</span>
+              <span style={{color:g.status==="done"?"#4b5563":"#d1d5db",textDecoration:g.status==="done"?"line-through":"none"}}>{g.content}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 이번 달에 걸친 주간 목표들 */}
+      {weekGoalGroups.length>0 && (
+        <div style={{background:"#6366f112",border:"1px solid #6366f130",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:12}}>
+          <div style={{color:"#6366f1",fontSize:"0.68rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>🎯 이 달의 주간 목표들</div>
+          {weekGoalGroups.map(({key,items})=>(
+            <div key={key} style={{marginBottom:6}}>
+              <div style={{color:"#6b7280",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:2}}>{key} ({items.filter(g=>g.status==="done").length}/{items.length})</div>
+              {items.map(g=>(
+                <div key={g.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.15rem 0",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                  <span style={{color:g.status==="done"?"#22c55e":"#4b5563"}}>{g.status==="done"?"✅":"○"}</span>
+                  <span style={{color:SUBJECT_COLORS[g.subject]?.text||"#a5b4fc",fontWeight:700}}>{g.subject}</span>
+                  <span style={{color:g.status==="done"?"#4b5563":"#d1d5db",textDecoration:g.status==="done"?"line-through":"none"}}>{g.content}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
         {["월","화","수","목","금","토","일"].map((d,i)=>(
           <div key={d} style={{textAlign:"center",color:i===5?"#8b5cf6":i===6?"#ef4444":"#4b5563",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,padding:"0.25rem 0"}}>{d}</div>
@@ -1519,9 +1867,9 @@ function CalendarView({data,setData,onSelectDate}) {
           const isToday=dateStr===today;
           const c=topSub?SUBJECT_COLORS[topSub]:null;
           return (
-            <div key={d} onClick={()=>onSelectDate(dateStr)} style={{
-              background:isToday?"#1a1d2e":"#0a0c12",
-              border:`1px solid ${isToday?"#6366f1":"#1e2230"}`,
+            <div key={d} onClick={()=>setSelectedDay(selectedDay===d?null:d)} style={{
+              background:isToday?"#1a1d2e":selectedDay===d?"#171a26":"#0a0c12",
+              border:`1px solid ${selectedDay===d?"#6366f1":isToday?"#6366f150":"#1e2230"}`,
               borderRadius:9,padding:"0.4rem 0.25rem",cursor:"pointer",
               minHeight:64,display:"flex",flexDirection:"column",alignItems:"center",gap:2
             }}>
@@ -1542,6 +1890,37 @@ function CalendarView({data,setData,onSelectDate}) {
           );
         })}
       </div>
+
+      {/* 선택된 날짜의 일간 계획 상세 */}
+      {selectedDay && (
+        <div style={{marginTop:10,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,padding:"1rem"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{color:"#f1f3f9",fontWeight:800,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+              {selDateStr} {selDateStr===today?"(오늘)":""}
+            </span>
+            <button onClick={()=>onSelectDate(selDateStr)} style={{
+              background:"#6366f120",border:"1px solid #6366f140",borderRadius:7,color:"#818cf8",
+              cursor:"pointer",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.3rem 0.7rem",fontWeight:700
+            }}>타임테이블 열기 →</button>
+          </div>
+          {selDayPlans.length===0
+            ? <div style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif"}}>이 날 등록된 계획 없음</div>
+            : selDayPlans.map(p=>{
+                const c=SUBJECT_COLORS[p.subject];
+                const statusColor = p.status==="done"?"#22c55e":p.status==="failed"?"#ef4444":"#6b7280";
+                const statusLabel = p.status==="done"?"✅ 완료":p.status==="failed"?"❌ 실패":"○ 예정";
+                return (
+                  <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"0.3rem 0",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                    <span style={{color:statusColor,fontSize:"0.72rem",flexShrink:0}}>{statusLabel}</span>
+                    <span style={{color:c?.text||"#a5b4fc",fontWeight:700,flexShrink:0}}>{p.subject}</span>
+                    <span style={{color:p.status==="done"?"#4b5563":"#d1d5db",textDecoration:p.status==="done"?"line-through":"none"}}>{p.content}</span>
+                  </div>
+                );
+              })
+          }
+        </div>
+      )}
+
       {/* 월간 통계 */}
       <div style={{marginTop:"1.2rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,padding:"1rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10}}>이번 달 누적</div>
@@ -1560,11 +1939,11 @@ function CalendarView({data,setData,onSelectDate}) {
               const c=SUBJECT_COLORS[sub];
               return <div key={sub} style={{marginBottom:7}}>
                 <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
-                  <span style={{color:c.text,fontSize:"0.75rem",fontWeight:700,fontFamily:"'Noto Sans KR',sans-serif"}}>{sub}</span>
+                  <span style={{color:c?.text,fontSize:"0.75rem",fontWeight:700,fontFamily:"'Noto Sans KR',sans-serif"}}>{sub}</span>
                   <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{Math.floor(m/60)}h {m%60}m</span>
                 </div>
                 <div style={{height:4,background:"#111318",borderRadius:99,overflow:"hidden"}}>
-                  <div style={{height:"100%",width:`${(m/total)*100}%`,background:c.bg,borderRadius:99}}/>
+                  <div style={{height:"100%",width:`${(m/total)*100}%`,background:c?.bg,borderRadius:99}}/>
                 </div>
               </div>;
             })}
@@ -1582,29 +1961,49 @@ const REF_DATA = {
     color:"#6366f1",
     출제경향:["조건 다중처리 — 조건 2개 이상 동시에 처리해야 풀림","배점정교화 — 부분 배점 까다로움","조건 누락 유도 — 조건 놓치면 함정에 빠짐","3개 틀림 패턴: 두 개는 계산실수(무조건 1글쓰고 1번 검산) + 나머지 문제 대충 읽음"],
     공부법:["처음 20초: 계산 금지. 조건/목표/개념 후보만 파악","정의 번역: 중점→AM=MB, 수직→90°, 이등변→AB=AC","조건 4추적: 왜 줬지? / 어디 쓰이지? / 없으면? / 생산하는 정보는?","막혔을 때: '왜 안 풀리지?' 금지 → 내 정보/조건/관계/개념 체크","정답 후 복기: 왜 먹혔지? 더 빠른 방법? 핵심 조건? 출제 의도?","틀리면 즉시 AI에게 찍어서 논리 추적 → 원인 분류 → 재도전","하루 1문제 연구: 핵심조건/정의번역/출제의도/함정/최적풀이 분석"],
-    오답분류:{"XM-C":"조건→정보 연결 실패 (가장 중요, 최상위권 차이)","XR":"계산실수/부호/단위 누락","XD":"조건 누락/숫자 오독","XT-T":"4점 문제 시간 낭비"},
+    오답분류:{"XC":"조건·정의 관련 개념 누락","XM-F":"조건 정독 안 해서 놓침 (가장 중요, 최상위권 차이)","XM-V":"계산 후 검토 안 해서 실수 못 잡음","XJ":"조건 4추적 이해했지만 실제 적용 실패"},
   },
   국어: {
     color:"#f59e0b",
     출제경향:["선지 O/X 체크 안 하면 함정 — 틀린 이유에 집중","새 관점/개념 제시 → 비어있으면 낚힘","복합지문 비교↑, 중층적 vs 차이점 문제 多","논증-주론 지문 핵심 문장 넣는 문제↑","서술형: 조건 기반 빈칸수, 대충 느낌으로는 X","선지 잠정 매우 교묘 — 끝까지 의심"],
     공부법:["구조 30초 설명: 시(화자→정서→변화→주제) / 소설(인물→갈등→사건→결말)","출제자 모드: '내가 선생님이면 어디를 바꿔 틀리게 할까?' 매번","7가지 비틀기: 주체/원인/결과/감정/시간/범위/단정(항상·반드시·완전히·오직)","소재/지시어/시어: '~은 ~을 의미한다' 형태로 문장 저장","개념공부: 이해→적용→산출 공법 (단순 암기 X, 적용이 포인트)","배경개념 → 직접 예문/선지 만들어보기","서술형: 우선적 조건 먼저 쓰기"],
-    오답분류:{"XM-R":"지문 독해 실패","XM-C":"개념 공부 부족","XS":"선지 비틀기 미파악","XF":"감으로 선지 선택"},
+    오답분류:{"XC":"작품/문법 개념 누락","XM-F":"지문 정독 안 해서 근거 놓침","XM-T/F":"옳은것/옳지않은것 헷갈림","XJ":"개념은 아는데 선지에 적용 못함"},
   },
   한국사: {
     color:"#8b5cf6",
     출제경향:["암기만으로 안 됨 → 5개 틀림 패턴: 글X/안알려진 문제 몰라서/사료 참고X","사료제시 → 판별 → 근거 문제↑","축 쌓기: 정치사+제도사/문화사/경제사","선지 매우 교묘 — 마지막 선지까지 정독","한 사건 속 정밀한 시간 흐름 파악 요구"],
     공부법:["사료 공부법: 사료보기 → 어느 시대? → 어느 사건/제도/인물? → 왜 그렇게 됐나?","평소 암기독 + 단위/시기 끝날 때마다 정리: 제도?문화?경제?","무언가 이상한 선지 = 무조건 의심","답 바꾸지 X","형광펜 계층구조 후 반드시 백지로 구조 재현 테스트","문제 중 더 풀기: 문제정중에 더 풀기, 3원인 풀기"],
-    오답분류:{"XM-C":"암기 부족/세부 개념 흐릿","XS":"선지 교묘한 변형 미파악","XF":"확신 없이 감으로 선택","XD":"사료 오독"},
+    오답분류:{"XC":"암기 부족/세부 개념 흐릿","XM-F":"사료 정독 안 해서 근거 놓침","XM-T/F":"옳은것/옳지않은것 헷갈림","XJ":"시대는 아는데 사건 연결 적용 실패"},
   },
   사회: {
     color:"#ec4899",
     출제경향:["자료 해석에서 내 언어로 다시 이해해야 함","선지 개별 검증, 자략인 듯한 선지도 검증 필요","통계 기반 맞춤 필터링 + 문제 응용↑"],
     공부법:["백지회독 + 계층 구조화 (개념 관계와 인과 중심)","자료 해석: 내 언어로 다시 이해 → 선지 개별 검증","통계/그래프: 수치 직접 계산해서 검증"],
-    오답분류:{"XM-R":"자료 해석 실패","XM-C":"개념 적용 오류","XS":"선지 판단 실수"},
+    오답분류:{"XC":"개념 누락","XM-F":"자료·조건 정독 안 해서 놓침","XJ":"개념은 아는데 자료 해석에 적용 못함"},
   },
 };
 
+// ── 집중 시스템 (조사 기반 정리) ─────────────────────────────────────────────────
+const FOCUS_SYSTEM = {
+  진단: "한 달 전엔 새로 시작한 시스템 자체의 신선함이 뇌를 자동 각성시켰음. 반복되면서 신선함이 사라지고 책상이 '익숙한 공간 = 이완 신호'로 조건화됨. 의지력 문제가 아니라 조건화의 문제.",
+  단계: [
+    { title:"1단계 — 신체 각성 트리거 (30초~2분)", body:"찬물 세수 또는 손목까지 찬물. 노르에피네프린이 스파이크되며 크래시 없이 몇 시간 각성 유지됨. (냉수 노출 연구: 노르에피네프린 최대 530%, 도파민 최대 250% 상승)" },
+    { title:"2단계 — 고정된 착석 의식 (1~2분)", body:"매번 완전히 동일한 순서로 시작. 의지력을 아끼기 위해 시작 행동 자체를 자동화 (Cal Newport, Deep Work의 'Ritualize' 원칙). 앉기 → 계획 3줄 쓰기 → 타이머 시작." },
+    { title:"3단계 — 워밍업 구간은 쉬운 것부터", body:"주의 회로가 각성하는 데 최소 5~10분 필요. 처음부터 어려운 문제 시작하면 막힘→좌절→졸림으로 이어짐. 첫 10분은 어제 오답 복습처럼 가장 쉬운 것." },
+    { title:"4단계 — 15분 타이머, 판단 없이 자동 연장", body:"'오늘 할 만한가', '집중되나' 같은 질문 자체를 하지 않음. 타이머 끝나면 그냥 다음 세션으로. 감정 상태와 완전히 분리된 실행." },
+    { title:"5단계 — 자극 통제: 잡생각 = 즉시 이탈", body:"불면증 치료의 핵심 원리 응용. 잡생각이 들면 그 즉시 일어나서 자리 이탈 → 10~20초 후 재착석. 앉아서 잡생각과 씨름하면 뇌가 '책상=잡생각 가능한 곳'으로 학습함. 즉시 이탈하면 '책상=집중만 가능한 곳'으로 재조건화됨. 단, 어려워서 하기 싫은 회피와는 구분 — 순수 집중력 흐트러짐에만 적용." },
+  ],
+  원칙: [
+    "공간 분리: 책상에서는 절대 쉬지 않음. 폰, 눕기 등은 다른 공간에서만.",
+    "판단하지 않기: 매번 '오늘 컨디션이 어떤지' 체크하지 않고 정해진 순서 그대로 실행.",
+    "최소 2주 동일하게 반복해야 재조건화가 걸림. 중간에 루틴 바꾸면 처음부터 다시.",
+    "재미는 있어도 없어도 실행하는 것 — 감정 상태에 의존하지 않는 시스템으로 설계.",
+  ],
+  출처: "Andrew Huberman (Stanford, 신경생물학) 도파민·각성 연구, Cal Newport (Georgetown) Deep Work 리추얼 이론, 자극 통제(Stimulus Control) 불면증 치료 원리 응용",
+};
+
 function ReferencePanel({wrongs}) {
+  const [refTab,setRefTab]=useState("subject"); // subject | focus
   const [activeSub,setActiveSub]=useState("수학");
   const ref=REF_DATA[activeSub];
   const c=SUBJECT_COLORS[activeSub];
@@ -1615,77 +2014,133 @@ function ReferencePanel({wrongs}) {
 
   return (
     <div>
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:"1.2rem"}}>
-        {Object.keys(REF_DATA).map(sub=>{
-          const sc=SUBJECT_COLORS[sub];
-          return <button key={sub} onClick={()=>setActiveSub(sub)} style={{
-            padding:"0.3rem 0.8rem",borderRadius:8,cursor:"pointer",
-            border:`2px solid ${activeSub===sub?sc.bg:"transparent"}`,
-            background:sc.light,color:sc.text,
-            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700,
-            boxShadow:activeSub===sub?`0 0 10px ${sc.bg}50`:undefined
-          }}>{sub}</button>;
-        })}
+      {/* 상위 탭: 과목별 자료 / 집중법 */}
+      <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:9,padding:3,marginBottom:"1rem"}}>
+        {[["subject","과목별 자료"],["focus","🧠 집중 시스템"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setRefTab(v)} style={{
+            flex:1,padding:"0.4rem 0.6rem",borderRadius:6,border:"none",cursor:"pointer",
+            background:refTab===v?"#6366f1":"transparent",color:refTab===v?"white":"#6b7280",
+            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:700
+          }}>{l}</button>
+        ))}
       </div>
 
-      <div style={{display:"flex",flexDirection:"column",gap:10}}>
-        {/* 오답 현황 */}
-        <div style={{background:"#0a0c12",border:`1px solid ${c.bg}30`,borderRadius:13,padding:"1.1rem"}}>
-          <div style={{color:c.text,fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>
-            ❌ {activeSub} 오답 현황 — 총 {subWrongs.length}개
+      {refTab==="subject" && (
+        <div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:"1.2rem"}}>
+            {Object.keys(REF_DATA).map(sub=>{
+              const sc=SUBJECT_COLORS[sub];
+              return <button key={sub} onClick={()=>setActiveSub(sub)} style={{
+                padding:"0.3rem 0.8rem",borderRadius:8,cursor:"pointer",
+                border:`2px solid ${activeSub===sub?sc.bg:"transparent"}`,
+                background:sc.light,color:sc.text,
+                fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700,
+                boxShadow:activeSub===sub?`0 0 10px ${sc.bg}50`:undefined
+              }}>{sub}</button>;
+            })}
           </div>
-          {sorted.length===0
-            ?<div style={{color:"#2d3241",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>아직 오답 없음</div>
-            :<div style={{display:"flex",flexDirection:"column",gap:7}}>
-              {sorted.map(([code,cnt])=>{
-                const ec=ERROR_CODES[code];
-                const pct=Math.round((cnt/subWrongs.length)*100);
-                return <div key={code}>
-                  <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,alignItems:"center"}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6}}><Tag code={code}/><span style={{color:"#6b7280",fontSize:"0.73rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{ec?.desc}</span></div>
-                    <span style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace"}}>{cnt}개 ({pct}%)</span>
-                  </div>
-                  <div style={{height:4,background:"#111318",borderRadius:99,overflow:"hidden"}}>
-                    <div style={{height:"100%",width:`${pct}%`,background:ec?.color||c.bg,borderRadius:99}}/>
-                  </div>
-                </div>;
-              })}
+
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {/* 오답 현황 */}
+            <div style={{background:"#0a0c12",border:`1px solid ${c?.bg}30`,borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:c?.text,fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>
+                ❌ {activeSub} 오답 현황 — 총 {subWrongs.length}개
+              </div>
+              {sorted.length===0
+                ?<div style={{color:"#2d3241",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>아직 오답 없음</div>
+                :<div style={{display:"flex",flexDirection:"column",gap:7}}>
+                  {sorted.map(([code,cnt])=>{
+                    const ec=ERROR_CODES[code];
+                    const pct=Math.round((cnt/subWrongs.length)*100);
+                    return <div key={code}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,alignItems:"center"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}><Tag code={code}/><span style={{color:"#6b7280",fontSize:"0.73rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{ec?.desc}</span></div>
+                        <span style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace"}}>{cnt}개 ({pct}%)</span>
+                      </div>
+                      <div style={{height:4,background:"#111318",borderRadius:99,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:`${pct}%`,background:ec?.color||c?.bg,borderRadius:99}}/>
+                      </div>
+                    </div>;
+                  })}
+                </div>
+              }
             </div>
-          }
-        </div>
 
-        {/* 출제 경향 */}
-        <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
-          <div style={{color:"#ef4444",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>🎯 우리 학교 출제 경향</div>
-          <div style={{display:"flex",flexDirection:"column",gap:6}}>
-            {ref.출제경향.map((t,i)=><div key={i} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
-              <span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",flexShrink:0,marginTop:2,fontWeight:700}}>{String(i+1).padStart(2,"0")}</span>
-              <span style={{color:"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>{t}</span>
-            </div>)}
+            {/* 출제 경향 */}
+            <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:"#ef4444",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>🎯 우리 학교 출제 경향</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {ref.출제경향.map((t,i)=><div key={i} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                  <span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",flexShrink:0,marginTop:2,fontWeight:700}}>{String(i+1).padStart(2,"0")}</span>
+                  <span style={{color:"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>{t}</span>
+                </div>)}
+              </div>
+            </div>
+
+            {/* 공부법 */}
+            <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:"#10b981",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>📚 공부법 핵심</div>
+              <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                {ref.공부법.map((t,i)=><div key={i} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"0.5rem 0.65rem",background:"#0d0f18",borderRadius:8,border:"1px solid #1a1d27"}}>
+                  <span style={{color:c?.text,fontSize:"0.62rem",fontFamily:"'JetBrains Mono',monospace",flexShrink:0,marginTop:2,fontWeight:700}}>{String(i+1).padStart(2,"0")}</span>
+                  <span style={{color:"#c9cbd4",fontSize:"0.79rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65}}>{t}</span>
+                </div>)}
+              </div>
+            </div>
+
+            {/* 오답 코드 정의 */}
+            <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:"#f59e0b",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>🔍 이 과목 오답 코드 의미</div>
+              <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                {Object.entries(ref.오답분류).map(([code,desc])=><div key={code} style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <Tag code={code}/><span style={{color:"#6b7280",fontSize:"0.77rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{desc}</span>
+                </div>)}
+              </div>
+            </div>
           </div>
         </div>
+      )}
 
-        {/* 공부법 */}
-        <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
-          <div style={{color:"#10b981",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>📚 공부법 핵심</div>
-          <div style={{display:"flex",flexDirection:"column",gap:5}}>
-            {ref.공부법.map((t,i)=><div key={i} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"0.5rem 0.65rem",background:"#0d0f18",borderRadius:8,border:"1px solid #1a1d27"}}>
-              <span style={{color:c.text,fontSize:"0.62rem",fontFamily:"'JetBrains Mono',monospace",flexShrink:0,marginTop:2,fontWeight:700}}>{String(i+1).padStart(2,"0")}</span>
-              <span style={{color:"#c9cbd4",fontSize:"0.79rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65}}>{t}</span>
-            </div>)}
+      {refTab==="focus" && (
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {/* 진단 */}
+          <div style={{background:"#6366f112",border:"1px solid #6366f130",borderRadius:13,padding:"1.1rem"}}>
+            <div style={{color:"#6366f1",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8,fontWeight:700}}>🩺 진단 — 왜 예전엔 됐고 지금은 안 되는가</div>
+            <div style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.7}}>{FOCUS_SYSTEM.진단}</div>
+          </div>
+
+          {/* 5단계 루틴 */}
+          <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+            <div style={{color:"#f59e0b",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>⚡ 시작 루틴 — 매번 동일하게 실행</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {FOCUS_SYSTEM.단계.map((s,i)=>(
+                <div key={i} style={{padding:"0.7rem 0.85rem",background:"#0d0f18",borderRadius:9,border:"1px solid #1a1d27"}}>
+                  <div style={{color:"#fbbf24",fontSize:"0.8rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:4}}>{s.title}</div>
+                  <div style={{color:"#9ca3af",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65}}>{s.body}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 핵심 원칙 */}
+          <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+            <div style={{color:"#22c55e",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>✅ 핵심 원칙</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {FOCUS_SYSTEM.원칙.map((t,i)=>(
+                <div key={i} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                  <span style={{color:"#22c55e",fontSize:"0.7rem",flexShrink:0,marginTop:2}}>✓</span>
+                  <span style={{color:"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>{t}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 출처 */}
+          <div style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,padding:"0.3rem 0.2rem"}}>
+            📖 근거: {FOCUS_SYSTEM.출처}
           </div>
         </div>
-
-        {/* 오답 코드 정의 */}
-        <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
-          <div style={{color:"#f59e0b",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>🔍 이 과목 오답 코드 의미</div>
-          <div style={{display:"flex",flexDirection:"column",gap:5}}>
-            {Object.entries(ref.오답분류).map(([code,desc])=><div key={code} style={{display:"flex",gap:8,alignItems:"center"}}>
-              <Tag code={code}/><span style={{color:"#6b7280",fontSize:"0.77rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{desc}</span>
-            </div>)}
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1703,6 +2158,7 @@ export default function App() {
 
   const addWrong=w=>setData(d=>({...d,wrongs:[...d.wrongs,w]}));
   const updateWrong=w=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===w.id?w:e)}));
+  const updateWrongCounts=(id,patch)=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===id?{...e,...patch}:e)}));
   const delWrong=id=>setData(d=>({...d,wrongs:d.wrongs.filter(e=>e.id!==id)}));
   const renameFolder=(key,name)=>setData(d=>({...d,folderNames:{...(d.folderNames||{}),[key]:name}}));
 
@@ -1772,15 +2228,13 @@ export default function App() {
 
       <main style={{maxWidth:900,margin:"0 auto",padding:"1.4rem 1rem"}}>
 
-        {/* AI 분석 버튼 */}
+        {/* 리포트 내보내기 버튼 */}
         <div style={{display:"flex",gap:7,marginBottom:"1.2rem",flexWrap:"wrap"}}>
-          {[["주간","week","#6366f1"],["월간","month","#3b82f6"],["3개월","quarter","#10b981"]].map(([l,p,c])=>(
-            <button key={p} onClick={()=>setModal(`ai-${p}`)} style={{
-              padding:"0.52rem 1rem",borderRadius:9,border:"none",
-              background:`linear-gradient(135deg,${c},${c}cc)`,
-              color:"white",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,fontSize:"0.8rem",cursor:"pointer",
-              boxShadow:`0 3px 14px ${c}35`}}>🤖 {l} AI 분석</button>
-          ))}
+          <button onClick={()=>setModal("report")} style={{
+            padding:"0.52rem 1.1rem",borderRadius:9,border:"none",
+            background:"linear-gradient(135deg,#6366f1,#8b5cf6)",
+            color:"white",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,fontSize:"0.8rem",cursor:"pointer",
+            boxShadow:"0 3px 14px #6366f135"}}>📋 기간별 리포트 내보내기</button>
         </div>
 
         {/* 스탯 */}
@@ -1791,4 +2245,42 @@ export default function App() {
             ["총 오답",`${data.wrongs.length}개`,"#f59e0b"],
           ].map(([l,v,c])=>(
             <div key={l} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.8rem 1rem",flex:1,minWidth:100}}>
-              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sa
+              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:3}}>{l}</div>
+              <div style={{color:c,fontSize:"1.4rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* 탭 */}
+        <div style={{display:"flex",gap:3,background:"#0a0c12",borderRadius:10,padding:3,border:"1px solid #1e2230",marginBottom:"1.2rem"}}>
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{
+              flex:1,padding:"0.45rem 0.4rem",borderRadius:7,border:"none",cursor:"pointer",
+              background:tab===t.id?"linear-gradient(135deg,#6366f1,#8b5cf6)":"transparent",
+              color:tab===t.id?"white":"#4b5563",
+              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:tab===t.id?700:400}}>{t.label}</button>
+          ))}
+        </div>
+
+        <div className="fade" key={tab}>
+          {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}/>}
+          {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
+          {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}
+            onPractice={e=>setPracticeQueue([e])}
+            onPracticeGroup={list=>setPracticeQueue(list)}
+            onUpdateCounts={updateWrongCounts}
+          />}
+          {tab==="ref"&&<ReferencePanel wrongs={data.wrongs}/>}
+        </div>
+      </main>
+
+      {/* 모달 */}
+      {modal==="wrong"&&<WrongForm editData={editWrong} onSave={w=>{editWrong?updateWrong(w):addWrong(w);setModal(null);setEditWrong(null);}} onClose={()=>{setModal(null);setEditWrong(null);}} onDelete={id=>{delWrong(id);setModal(null);setEditWrong(null);}}/>}
+      {modal==="backup"&&<BackupModal data={data} onImport={d=>setData(d)} onClose={()=>setModal(null)}/>}
+      {modal==="report"&&<ReportExport data={data} onClose={()=>setModal(null)}/>}
+      {practiceQueue&&practiceQueue.length>0&&(
+        <PracticeMode queue={practiceQueue} onExit={()=>setPracticeQueue(null)} onResult={handlePracticeResult}/>
+      )}
+    </div>
+  );
+}
