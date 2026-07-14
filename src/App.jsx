@@ -17,10 +17,10 @@ function elsSubKey(subject){
   return subs.length>0 ? subs[0] : "전체";
 }
 const ELS_TRACKS = [
-  { key:"구조", label:"🏗 구조", desc:"큰 흐름을 잡아야 하는가", color:"#3b82f6" },
   { key:"이해", label:"💡 이해", desc:"원리를 이해해야 하는가", color:"#f59e0b" },
-  { key:"판단", label:"🎯 판단", desc:"문제 해결 능력이 중요한가", color:"#ef4444" },
-  { key:"자동화", label:"⚡ 자동화", desc:"즉시 인출해야 하는가", color:"#a855f7" },
+  { key:"암기", label:"🧠 암기", desc:"즉시 인출해야 하는가", color:"#a855f7" },
+  { key:"적용", label:"🎯 적용", desc:"문제 해결에 적용해야 하는가", color:"#ef4444" },
+  { key:"탐구", label:"🔍 탐구", desc:"깊이 파고들어야 하는가", color:"#3b82f6" },
   { key:"창조", label:"🧪 창조", desc:"직접 만들면 이해가 깊어지는가", color:"#22c55e" },
 ];
 
