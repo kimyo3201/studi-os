@@ -114,25 +114,39 @@ async function cloudLoad() {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}&select=data`, {
       headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      console.error("cloudLoad failed:", res.status, await res.text());
+      return { ok:false, data:null };
+    }
     const json = await res.json();
-    return json?.[0]?.data || null;
-  } catch { return null; }
+    return { ok:true, data: json?.[0]?.data || null };
+  } catch (err) {
+    console.error("cloudLoad error:", err);
+    return { ok:false, data:null };
+  }
 }
 
 async function cloudSave(d) {
   try {
-    await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data`, {
       method: "POST",
       headers: {
         apikey: SUPABASE_KEY,
         Authorization: `Bearer ${SUPABASE_KEY}`,
         "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates"
+        Prefer: "resolution=merge-duplicates,return=minimal"
       },
       body: JSON.stringify({ id: SYNC_ROW_ID, data: d, updated_at: new Date().toISOString() })
     });
-  } catch {}
+    if (!res.ok) {
+      console.error("cloudSave failed:", res.status, await res.text());
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error("cloudSave error:", err);
+    return false;
+  }
 }
 
 function todayStr() { return new Date().toISOString().slice(0,10); }
@@ -1848,4 +1862,1056 @@ function TrackBlock({subject, sub, track, experiments, onSave, onScore, onDelete
           <div style={{color:"#6b7280",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:7}}>{track.desc}</div>
           {list.length===0
             ? <div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 실험법 없음</div>
-            : <div style={{display:"flex",
+            : <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                {list.map((exp,i)=>(
+                  <ExperimentRow key={exp.id} exp={exp}
+                    onScore={onScore} onEdit={e=>{setEditExp(e);setModalOpen(true);}} onDelete={onDelete}
+                    onMove={dir=>onMove(exp.id,dir)}
+                    isFirst={i===0} isLast={i===list.length-1}/>
+                ))}
+              </div>
+          }
+        </div>
+      )}
+      {modalOpen&&(
+        <ExperimentForm editData={editExp} subject={subject} sub={sub} track={track.key}
+          onSave={e=>{onSave(e);setModalOpen(false);setEditExp(null);}}
+          onClose={()=>{setModalOpen(false);setEditExp(null);}}/>
+      )}
+    </div>
+  );
+}
+
+// 일요일 밤 리뷰 — 전체 과목x세분화x계열 실험법 중 BEST 3 / WORST 3 선택
+function ELSWeeklyReview({experiments, onSave, onClose}) {
+  const [goodIds,setGoodIds]=useState([]);
+  const [badIds,setBadIds]=useState([]);
+  const active = experiments.filter(e=>e.status!=="removed");
+
+  function toggleGood(id){
+    setBadIds(b=>b.filter(x=>x!==id));
+    setGoodIds(g=>g.includes(id)?g.filter(x=>x!==id):(g.length<3?[...g,id]:g));
+  }
+  function toggleBad(id){
+    setGoodIds(g=>g.filter(x=>x!==id));
+    setBadIds(b=>b.includes(id)?b.filter(x=>x!==id):(b.length<3?[...b,id]:b));
+  }
+
+  // 과목 > 세부 로 그룹핑해서 보여줌
+  const grouped = {};
+  for(const e of active){
+    const gkey = `${e.subject}${e.sub&&e.sub!=="전체"?" · "+e.sub:""}`;
+    if(!grouped[gkey]) grouped[gkey]=[];
+    grouped[gkey].push(e);
+  }
+
+  return (
+    <Modal title="🗓️ 일요일 밤 — ELS 주간 리뷰" onClose={onClose} wide>
+      <p style={{color:"#6b7280",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"1rem",lineHeight:1.6}}>
+        이번 주 가장 효과 좋았던 실험법 최대 3개, 가장 효과 없었던 것 최대 3개를 골라줘.
+      </p>
+      <div style={{display:"flex",flexDirection:"column",gap:12,maxHeight:420,overflowY:"auto",marginBottom:"1rem"}}>
+        {Object.keys(grouped).length===0
+          ? <div style={{color:"#4b5563",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 실험법이 없어.</div>
+          : Object.entries(grouped).map(([gkey,list])=>(
+              <div key={gkey}>
+                <div style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>{gkey}</div>
+                <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                  {list.map(exp=>{
+                    const isGood=goodIds.includes(exp.id);
+                    const isBad=badIds.includes(exp.id);
+                    const track=ELS_TRACKS.find(t=>t.key===exp.track);
+                    return (
+                      <div key={exp.id} style={{
+                        display:"flex",alignItems:"center",gap:8,padding:"0.5rem 0.7rem",borderRadius:8,
+                        background:isGood?"#22c55e12":isBad?"#ef444412":"#0a0c12",
+                        border:`1px solid ${isGood?"#22c55e40":isBad?"#ef444440":"#1e2230"}`
+                      }}>
+                        <span style={{color:track?.color||"#9ca3af",fontSize:"0.68rem",fontWeight:700,fontFamily:"'Noto Sans KR',sans-serif",flexShrink:0}}>{track?.label||exp.track}</span>
+                        <span style={{color:"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",flex:1}}>{exp.name}</span>
+                        <button onClick={()=>toggleGood(exp.id)} disabled={!isGood&&goodIds.length>=3} style={{
+                          background:isGood?"#22c55e":"#1e223050",border:"1px solid "+(isGood?"#22c55e":"#2a2d3a"),borderRadius:6,
+                          color:isGood?"white":"#6b7280",cursor:goodIds.length>=3&&!isGood?"not-allowed":"pointer",
+                          fontSize:"0.68rem",padding:"0.2rem 0.5rem",fontWeight:700,opacity:goodIds.length>=3&&!isGood?0.4:1
+                        }}>👍</button>
+                        <button onClick={()=>toggleBad(exp.id)} disabled={!isBad&&badIds.length>=3} style={{
+                          background:isBad?"#ef4444":"#1e223050",border:"1px solid "+(isBad?"#ef4444":"#2a2d3a"),borderRadius:6,
+                          color:isBad?"white":"#6b7280",cursor:badIds.length>=3&&!isBad?"not-allowed":"pointer",
+                          fontSize:"0.68rem",padding:"0.2rem 0.5rem",fontWeight:700,opacity:badIds.length>=3&&!isBad?0.4:1
+                        }}>👎</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))
+        }
+      </div>
+      <div style={{display:"flex",gap:10,marginBottom:"1rem",fontSize:"0.74rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+        <span style={{color:"#22c55e"}}>👍 효과 좋음 {goodIds.length}/3</span>
+        <span style={{color:"#ef4444"}}>👎 효과 없음 {badIds.length}/3</span>
+      </div>
+      <Btn full disabled={goodIds.length===0&&badIds.length===0} onClick={()=>{onSave(goodIds,badIds);onClose();}}>리뷰 저장</Btn>
+    </Modal>
+  );
+}
+
+// 전체 ELS 시스템 화면 — 과목 선택 → 5계열 전부 펼쳐서 표시
+function ELSSystem({data, setData}) {
+  const [subject,setSubject]=useState("수학");
+  const subs = ELS_SUBCATEGORIES[subject]||[];
+  const [sub,setSub]=useState(subs.length>0?subs[0]:"전체");
+  const [reviewOpen,setReviewOpen]=useState(false);
+  const experiments = data.elsExperiments||[];
+  const reviews = data.elsReviews||[];
+
+  function changeSubject(s){
+    setSubject(s);
+    const newSubs = ELS_SUBCATEGORIES[s]||[];
+    setSub(newSubs.length>0?newSubs[0]:"전체");
+  }
+
+  function saveExperiment(exp){
+    setData(d=>{
+      const list=[...(d.elsExperiments||[])];
+      const idx=list.findIndex(x=>x.id===exp.id);
+      if(idx>=0){
+        list[idx]=exp;
+      } else {
+        // 새로 추가되는 실험법은 같은 (과목,세부,계열) 맨 뒤에 배치
+        const sameTrack=list.filter(x=>x.subject===exp.subject&&x.sub===exp.sub&&x.track===exp.track);
+        const maxOrder=sameTrack.length>0?Math.max(...sameTrack.map(x=>x.order)):0;
+        list.push({...exp, order:maxOrder+1});
+      }
+      return {...d, elsExperiments:list};
+    });
+  }
+  function scoreExperiment(id,score){
+    setData(d=>({...d, elsExperiments:(d.elsExperiments||[]).map(e=>e.id===id?{...e,score}:e)}));
+  }
+  function deleteExperiment(id){
+    setData(d=>({...d, elsExperiments:(d.elsExperiments||[]).filter(e=>e.id!==id)}));
+  }
+  function moveExperiment(id, dir){
+    setData(d=>{
+      const list=[...(d.elsExperiments||[])];
+      const target=list.find(x=>x.id===id);
+      if(!target)return d;
+      const sameTrack=list.filter(x=>x.subject===target.subject&&x.sub===target.sub&&x.track===target.track).sort((a,b)=>a.order-b.order);
+      const idx=sameTrack.findIndex(x=>x.id===id);
+      const swapIdx=idx+dir;
+      if(swapIdx<0||swapIdx>=sameTrack.length)return d;
+      const a=sameTrack[idx], b=sameTrack[swapIdx];
+      const newList=list.map(x=>{
+        if(x.id===a.id)return {...x,order:b.order};
+        if(x.id===b.id)return {...x,order:a.order};
+        return x;
+      });
+      return {...d, elsExperiments:newList};
+    });
+  }
+
+  function saveReview(goodIds, badIds){
+    setData(d=>{
+      const list=(d.elsExperiments||[]).map(e=>{
+        if(goodIds.includes(e.id)) return {...e, score:Math.min(5,(e.score||0)+1)};
+        if(badIds.includes(e.id)) return {...e, score:Math.max(0,(e.score||0)-1)};
+        return e;
+      });
+      const review={id:Date.now(), weekKey:getWeekKey(todayStr()), date:todayStr(), goodIds, badIds};
+      return {...d, elsExperiments:list, elsReviews:[...(d.elsReviews||[]), review]};
+    });
+  }
+
+  const subjExps = experiments.filter(e=>e.subject===subject && e.sub===sub);
+  const totalActive = subjExps.filter(e=>e.status!=="removed").length;
+  const scored = subjExps.filter(e=>e.score>0);
+  const avgAll = scored.length>0 ? (scored.reduce((a,e)=>a+e.score,0)/scored.length).toFixed(1) : "-";
+
+  return (
+    <div>
+      <div style={{background:"#6366f110",border:"1px solid #6366f130",borderRadius:12,padding:"0.9rem 1.1rem",marginBottom:"1rem"}}>
+        <div style={{color:"#818cf8",fontSize:"0.78rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:4}}>Evolution Learning System</div>
+        <div style={{color:"#9ca3af",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
+          모든 공부의 목적은 정답이 아니라 사고를 진화시키는 것. 뼈대(5계열)는 고정, 실험법은 계속 진화한다.
+        </div>
+      </div>
+
+      <div style={{marginBottom:"1.1rem"}}>
+        <Btn small color="#f59e0b" onClick={()=>setReviewOpen(true)}>🗓️ 일요일 리뷰 시작 (BEST 3 / WORST 3)</Btn>
+      </div>
+
+      {reviews.length>0&&(()=>{
+        const last=reviews[reviews.length-1];
+        return (
+          <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:"1rem"}}>
+            <div style={{color:"#6b7280",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+              최근 리뷰: {last.date} · 👍{last.goodIds.length}개 강화됨 · 👎{last.badIds.length}개 하향됨
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 과목 선택 */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:subs.length>0?8:"1rem"}}>
+        {ELS_SUBJECTS.map(s=>{
+          const c=SUBJECT_COLORS[s];
+          return (
+            <button key={s} onClick={()=>changeSubject(s)} style={{
+              padding:"0.32rem 0.85rem",borderRadius:8,cursor:"pointer",
+              border:`2px solid ${subject===s?c.bg:"transparent"}`,
+              background:c.light,color:c.text,
+              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:700,
+              boxShadow:subject===s?`0 0 10px ${c.bg}50`:undefined
+            }}>{s}</button>
+          );
+        })}
+      </div>
+
+      {/* 세분화 항목 선택 (있는 과목만) */}
+      {subs.length>0&&(
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"1rem"}}>
+          {subs.map(sb=>(
+            <button key={sb} onClick={()=>setSub(sb)} style={{
+              padding:"0.28rem 0.7rem",borderRadius:7,cursor:"pointer",
+              border:`1px solid ${sub===sb?"#6366f1":"#2a2d3a"}`,
+              background:sub===sb?"#6366f120":"#111318",
+              color:sub===sb?"#818cf8":"#6b7280",
+              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.74rem",fontWeight:700
+            }}>{sb}</button>
+          ))}
+        </div>
+      )}
+
+      <div style={{display:"flex",gap:10,marginBottom:"1rem"}}>
+        <div style={{color:"#6b7280",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+          {subject}{subs.length>0?` · ${sub}`:""} 실험법 {totalActive}개
+        </div>
+        {avgAll!=="-"&&<div style={{color:"#fbbf24",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace"}}>평균 ★{avgAll}</div>}
+      </div>
+
+      {/* 5계열 전부 */}
+      {ELS_TRACKS.map(track=>(
+        <TrackBlock key={track.key} subject={subject} sub={sub} track={track} experiments={experiments}
+          onSave={saveExperiment} onScore={scoreExperiment} onDelete={deleteExperiment} onMove={moveExperiment}/>
+      ))}
+
+      {reviewOpen&&(
+        <ELSWeeklyReview experiments={experiments} onSave={saveReview} onClose={()=>setReviewOpen(false)}/>
+      )}
+    </div>
+  );
+}
+
+// ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
+function ScheduleView({data,setData,initDate}) {
+  const [date,setDate]=useState(initDate||todayStr());
+  const [paintSubject,setPaintSubject]=useState("수학");
+  const [erasing,setErasing]=useState(false);
+  const [dragging,setDragging]=useState(false);
+  const [planModal,setPlanModal]=useState(null);
+  const [editPlan,setEditPlan]=useState(null);
+  const [planView,setPlanView]=useState("day"); // day | week | month
+
+  const hours=Array.from({length:TOTAL_HOURS},(_,i)=>(START_HOUR+i)%24);
+  const daySlots=data.timetable[date]||{};
+  const totalMins=calcMinutes(daySlots);
+  const subMins=calcSubjectMinutes(daySlots);
+  const dayPlans=(data.plans2||[]).filter(p=>p.date===date).sort((a,b)=>a.subject.localeCompare(b.subject));
+
+  function paint(si){
+    setData(d=>{const tt={...d.timetable};const day={...(tt[date]||{})};
+      if(erasing)delete day[si]; else day[si]=paintSubject;
+      tt[date]=day;return {...d,timetable:tt};});
+  }
+  function handleDown(si){setDragging(true);paint(si);}
+  function handleEnter(si){if(dragging)paint(si);}
+  function handleUp(){setDragging(false);}
+  function clearDay(){if(!confirm("이 날 타임테이블 초기화?"))return;
+    setData(d=>{const tt={...d.timetable};delete tt[date];return {...d,timetable:tt};});}
+
+  function savePlan(p){
+    setData(d=>{const list=[...(d.plans2||[])];
+      const idx=list.findIndex(x=>x.id===p.id);
+      if(idx>=0)list[idx]=p; else list.push(p);
+      return {...d,plans2:list};});
+  }
+  function deletePlan(id){setData(d=>({...d,plans2:(d.plans2||[]).filter(p=>p.id!==id)}));}
+  function setStatus(id,status){
+    setData(d=>{
+      const list=[...(d.plans2||[])];
+      const idx=list.findIndex(x=>x.id===id);if(idx<0)return d;
+      const plan={...list[idx],status};list[idx]=plan;
+      if(status==="failed"){
+        const tom=nextDay(plan.date);
+        if(!list.some(p=>p.id===plan.id+"_m_"+tom))
+          list.push({...plan,id:plan.id+"_m_"+tom,date:tom,status:"todo",note:"[이월] "+plan.content.slice(0,30)});
+      }
+      return {...d,plans2:list};});
+  }
+
+  return (
+    <div>
+      {/* 날짜 + 컨트롤 */}
+      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:"1rem",flexWrap:"wrap"}}>
+        <input type="date" value={date} onChange={e=>setDate(e.target.value)}
+          style={{...inp,width:"auto",padding:"0.35rem 0.65rem",fontSize:"0.82rem"}}/>
+        <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:3}}>
+          <button onClick={()=>setErasing(false)} style={{padding:"0.28rem 0.65rem",borderRadius:5,border:"none",cursor:"pointer",
+            background:!erasing?"#6366f1":"transparent",color:!erasing?"white":"#4b5563",
+            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",fontWeight:700}}>칠하기</button>
+          <button onClick={()=>setErasing(true)} style={{padding:"0.28rem 0.65rem",borderRadius:5,border:"none",cursor:"pointer",
+            background:erasing?"#ef4444":"transparent",color:erasing?"white":"#4b5563",
+            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.72rem",fontWeight:700}}>지우기</button>
+        </div>
+        <Btn small outline color="#4b5563" onClick={clearDay}>초기화</Btn>
+        <div style={{marginLeft:"auto"}}>
+          <span style={{color:"#6366f1",fontSize:"0.9rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace"}}>{Math.floor(totalMins/60)}h {totalMins%60}m</span>
+        </div>
+      </div>
+
+      {/* 과목 팔레트 */}
+      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"1rem"}}>
+        {SUBJECTS.map(sub=>{
+          const c=SUBJECT_COLORS[sub];const mins=subMins[sub]||0;
+          return <button key={sub} onClick={()=>{setPaintSubject(sub);setErasing(false);}} style={{
+            padding:"0.25rem 0.65rem",borderRadius:7,
+            border:`2px solid ${paintSubject===sub&&!erasing?c?.bg:"transparent"}`,
+            background:c?.light,color:c?.text,fontFamily:"'Noto Sans KR',sans-serif",
+            fontSize:"0.72rem",fontWeight:700,cursor:"pointer",
+            boxShadow:paintSubject===sub&&!erasing?`0 0 10px ${c?.bg}55`:undefined
+          }}>{sub}{mins>0?" "+Math.floor(mins/60)+"h"+(mins%60?mins%60+"m":""):""}</button>;
+        })}
+      </div>
+
+      {/* 메인: 타임테이블(왼쪽) + 계획(오른쪽), 모바일에선 세로 배치 */}
+      <div className="schedule-grid" style={{display:"grid",gap:12,alignItems:"start"}}>
+
+        {/* 타임테이블 */}
+        <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,overflow:"auto",userSelect:"none"}}
+          onMouseLeave={handleUp} onMouseUp={handleUp} onTouchEnd={handleUp}>
+          <div style={{display:"flex",flexDirection:"column",minWidth:36+SLOTS_PER_HOUR*36}}>
+            {/* 분 헤더 */}
+            <div style={{display:"flex",borderBottom:"2px solid #1e2230",background:"#0a0c12",position:"sticky",top:0,zIndex:5}}>
+              <div style={{width:38,flexShrink:0}}/>
+              {Array.from({length:SLOTS_PER_HOUR},(_,mi)=>(
+                <div key={mi} style={{width:36,flexShrink:0,textAlign:"center",padding:"0.22rem 0",borderLeft:"1px solid #1e2230"}}>
+                  <span style={{color:"#4b5563",fontSize:"0.55rem",fontFamily:"'JetBrains Mono',monospace"}}>:{String(mi*10).padStart(2,"0")}</span>
+                </div>
+              ))}
+            </div>
+            {/* 시간 행 */}
+            {hours.map((h,hi)=>(
+              <div key={h} style={{display:"flex",borderBottom:hi<hours.length-1?"1px solid #111318":"none"}}>
+                <div style={{width:38,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:"1px solid #1e2230",background:"#0a0c12"}}>
+                  <span style={{color:"#4b5563",fontSize:"0.58rem",fontFamily:"'JetBrains Mono',monospace"}}>{String(h).padStart(2,"0")}시</span>
+                </div>
+                {Array.from({length:SLOTS_PER_HOUR},(_,mi)=>{
+                  const si=hi*SLOTS_PER_HOUR+mi;
+                  const sub=daySlots[si];
+                  const c=sub?SUBJECT_COLORS[sub]:null;
+                  return <div key={mi}
+                    onMouseDown={()=>handleDown(si)} onMouseEnter={()=>handleEnter(si)}
+                    onTouchStart={e=>{e.preventDefault();handleDown(si);}}
+                    onTouchMove={e=>{e.preventDefault();const t=e.touches[0];const el=document.elementFromPoint(t.clientX,t.clientY);if(el?.dataset?.slot)handleEnter(Number(el.dataset.slot));}}
+                    data-slot={si}
+                    style={{width:36,height:28,flexShrink:0,cursor:"crosshair",
+                      background:sub?c?.bg+"e0":"transparent",borderLeft:"1px solid #1a1d27",
+                      position:"relative",transition:"background 0.04s"}}>
+                    {sub&&mi===0&&<span style={{position:"absolute",left:1,top:1,fontSize:"0.5rem",color:"white",
+                      fontFamily:"'Noto Sans KR',sans-serif",pointerEvents:"none",whiteSpace:"nowrap",overflow:"hidden",maxWidth:32,opacity:0.9}}>{sub}</span>}
+                  </div>;
+                })}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 계획 패널 */}
+        <div>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.6rem",flexWrap:"wrap",gap:6}}>
+            <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:3}}>
+              {[["day","일간"],["week","주간"],["month","월간"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setPlanView(v)} style={{padding:"0.28rem 0.6rem",borderRadius:5,border:"none",cursor:"pointer",
+                  background:planView===v?"#6366f1":"transparent",color:planView===v?"white":"#4b5563",
+                  fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.7rem",fontWeight:700}}>{l}</button>
+              ))}
+            </div>
+            {planView==="day"&&<Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 계획 추가</Btn>}
+          </div>
+
+          {planView==="day"&&(
+            <>
+              <div style={{marginBottom:8}}>
+                <span style={{color:"#9ca3af",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>
+                  오늘 계획 <span style={{color:"#6366f1"}}>{dayPlans.length}개</span>
+                  <span style={{color:"#22c55e",marginLeft:6}}>✅{dayPlans.filter(p=>p.status==="done").length}</span>
+                  <span style={{color:"#ef4444",marginLeft:4}}>❌{dayPlans.filter(p=>p.status==="failed").length}</span>
+                </span>
+              </div>
+              {dayPlans.length===0
+                ?<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>계획 없음</div>
+                :dayPlans.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus}
+                    onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}/>)
+              }
+            </>
+          )}
+
+          {planView==="week"&&(()=>{
+            const dt=new Date(date);
+            const day=dt.getDay();
+            const mon=new Date(dt); mon.setDate(dt.getDate()-(day===0?6:day-1));
+            const weekDates=Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
+            const DAY_KO=["월","화","수","목","금","토","일"];
+            const weekPlans=(data.plans2||[]).filter(p=>weekDates.includes(p.date));
+            return (
+              <div>
+                <div style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>
+                  이번 주 계획 <span style={{color:"#6366f1",fontWeight:700}}>{weekPlans.length}개</span>
+                  <span style={{color:"#22c55e",marginLeft:6}}>✅{weekPlans.filter(p=>p.status==="done").length}</span>
+                  <span style={{color:"#ef4444",marginLeft:4}}>❌{weekPlans.filter(p=>p.status==="failed").length}</span>
+                </div>
+                {weekDates.map((wd,i)=>{
+                  const wp=weekPlans.filter(p=>p.date===wd);
+                  if(wp.length===0)return null;
+                  return (
+                    <div key={wd} style={{marginBottom:10}}>
+                      <div onClick={()=>setDate(wd)} style={{cursor:"pointer",color:wd===todayStr()?"#6366f1":"#6b7280",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>
+                        {DAY_KO[i]} · {wd.slice(5)}
+                      </div>
+                      {wp.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus} onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}/>)}
+                    </div>
+                  );
+                })}
+                {weekPlans.length===0&&<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>이번 주 계획 없음</div>}
+              </div>
+            );
+          })()}
+
+          {planView==="month"&&(()=>{
+            const ym=date.slice(0,7);
+            const monthPlans=(data.plans2||[]).filter(p=>p.date.startsWith(ym));
+            const bySubj={};
+            for(const p of monthPlans){bySubj[p.subject]=(bySubj[p.subject]||0)+1;}
+            const done=monthPlans.filter(p=>p.status==="done").length;
+            const failed=monthPlans.filter(p=>p.status==="failed").length;
+            const rate=monthPlans.length>0?Math.round((done/monthPlans.length)*100):0;
+            return (
+              <div>
+                <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:"1rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.8rem"}}>
+                  {[["총",monthPlans.length,"#6b7280"],["완료",done,"#22c55e"],["실패",failed,"#ef4444"],["달성률",rate+"%","#f59e0b"]].map(([l,v,c])=>(
+                    <div key={l} style={{textAlign:"center"}}>
+                      <div style={{color:c,fontSize:"1.1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace"}}>{v}</div>
+                      <div style={{color:"#4b5563",fontSize:"0.62rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>과목별 계획 수</div>
+                {Object.entries(bySubj).sort((a,b)=>b[1]-a[1]).map(([s,cnt])=>(
+                  <div key={s} style={{display:"flex",justifyContent:"space-between",padding:"0.4rem 0",borderBottom:"1px solid #111318"}}>
+                    <span style={{color:SUBJECT_COLORS[s]?.text||"#a5b4fc",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>{s}</span>
+                    <span style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>{cnt}개</span>
+                  </div>
+                ))}
+                {monthPlans.length===0&&<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>이번 달 계획 없음</div>}
+              </div>
+            );
+          })()}
+        </div>
+      </div>
+
+      {(planModal==="add"||planModal==="edit")&&(
+        <PlanForm editData={planModal==="edit"?editPlan:null} defaultDate={date}
+          onSave={p=>{savePlan(p);setPlanModal(null);setEditPlan(null);}}
+          onClose={()=>{setPlanModal(null);setEditPlan(null);}}/>
+      )}
+    </div>
+  );
+}
+
+// ── 달력 뷰 ──────────────────────────────────────────────────────────────────
+function CalendarView({data,setData,onSelectDate}) {
+  const [year,setYear]=useState(new Date().getFullYear());
+  const [month,setMonth]=useState(new Date().getMonth());
+  const [selectedDay,setSelectedDay]=useState(null); // 상세보기용, null이면 안 보임
+  const today=todayStr();
+  const MONTH_KO=["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
+  const firstDay=new Date(year,month,1).getDay();
+  const daysInMonth=new Date(year,month+1,0).getDate();
+  const cells=[];
+  for(let i=0;i<(firstDay===0?6:firstDay-1);i++)cells.push(null);
+  for(let d=1;d<=daysInMonth;d++)cells.push(d);
+  function ds(d){return `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
+  function prev(){if(month===0){setMonth(11);setYear(y=>y-1);}else setMonth(m=>m-1);setSelectedDay(null);}
+  function next(){if(month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1);setSelectedDay(null);}
+
+  const monthKey=`${year}-${String(month+1).padStart(2,"0")}`;
+  const monthGoalItems=(data.goalItems||[]).filter(g=>g.scope==="month"&&g.scopeKey===monthKey);
+
+  // 이번 달에 걸친 모든 주 목표 모으기 (달 1일~말일 각각의 주차 키를 모아 중복 제거)
+  const weekKeysInMonth=[...new Set(Array.from({length:daysInMonth},(_,i)=>getWeekKey(ds(i+1))))];
+  const weekGoalGroups=weekKeysInMonth.map(wk=>({
+    key:wk,
+    items:(data.goalItems||[]).filter(g=>g.scope==="week"&&g.scopeKey===wk)
+  })).filter(g=>g.items.length>0);
+
+  const selDateStr = selectedDay ? ds(selectedDay) : null;
+  const selDayPlans = selDateStr ? (data.plans2||[]).filter(p=>p.date===selDateStr) : [];
+
+  return (
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.1rem"}}>
+        <button onClick={prev} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer",fontSize:"1.2rem",padding:"0.3rem 0.6rem"}}>‹</button>
+        <span style={{color:"#f1f3f9",fontWeight:800,fontSize:"1rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{year}년 {MONTH_KO[month]}</span>
+        <button onClick={next} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer",fontSize:"1.2rem",padding:"0.3rem 0.6rem"}}>›</button>
+      </div>
+
+      {/* 이번 달 월간 목표 요약 */}
+      {monthGoalItems.length>0 && (
+        <div style={{background:"#f59e0b12",border:"1px solid #f59e0b30",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:8}}>
+          <div style={{color:"#f59e0b",fontSize:"0.68rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>
+            🏁 이 달의 목표 ({monthGoalItems.filter(g=>g.status==="done").length}/{monthGoalItems.length})
+          </div>
+          {monthGoalItems.map(g=>(
+            <div key={g.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.2rem 0",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+              <span style={{color:g.status==="done"?"#22c55e":"#4b5563"}}>{g.status==="done"?"✅":"○"}</span>
+              <span style={{color:SUBJECT_COLORS[g.subject]?.text||"#a5b4fc",fontWeight:700}}>{g.subject}</span>
+              <span style={{color:g.status==="done"?"#4b5563":"#d1d5db",textDecoration:g.status==="done"?"line-through":"none"}}>{g.content}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 이번 달에 걸친 주간 목표들 */}
+      {weekGoalGroups.length>0 && (
+        <div style={{background:"#6366f112",border:"1px solid #6366f130",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:12}}>
+          <div style={{color:"#6366f1",fontSize:"0.68rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:6}}>🎯 이 달의 주간 목표들</div>
+          {weekGoalGroups.map(({key,items})=>(
+            <div key={key} style={{marginBottom:6}}>
+              <div style={{color:"#6b7280",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:2}}>{key} ({items.filter(g=>g.status==="done").length}/{items.length})</div>
+              {items.map(g=>(
+                <div key={g.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.15rem 0",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                  <span style={{color:g.status==="done"?"#22c55e":"#4b5563"}}>{g.status==="done"?"✅":"○"}</span>
+                  <span style={{color:SUBJECT_COLORS[g.subject]?.text||"#a5b4fc",fontWeight:700}}>{g.subject}</span>
+                  <span style={{color:g.status==="done"?"#4b5563":"#d1d5db",textDecoration:g.status==="done"?"line-through":"none"}}>{g.content}</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
+        {["월","화","수","목","금","토","일"].map((d,i)=>(
+          <div key={d} style={{textAlign:"center",color:i===5?"#8b5cf6":i===6?"#ef4444":"#4b5563",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,padding:"0.25rem 0"}}>{d}</div>
+        ))}
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+        {cells.map((d,i)=>{
+          if(!d)return <div key={"e"+i}/>;
+          const dateStr=ds(d);
+          const slots=data.timetable[dateStr]||{};
+          const mins=calcMinutes(slots);
+          const subMins=calcSubjectMinutes(slots);
+          const topSub=Object.entries(subMins).sort((a,b)=>b[1]-a[1])[0]?.[0];
+          const plans=(data.plans2||[]).filter(p=>p.date===dateStr);
+          const done=plans.filter(p=>p.status==="done").length;
+          const failed=plans.filter(p=>p.status==="failed").length;
+          const isToday=dateStr===today;
+          const c=topSub?SUBJECT_COLORS[topSub]:null;
+          return (
+            <div key={d} onClick={()=>setSelectedDay(selectedDay===d?null:d)} style={{
+              background:isToday?"#1a1d2e":selectedDay===d?"#171a26":"#0a0c12",
+              border:`1px solid ${selectedDay===d?"#6366f1":isToday?"#6366f150":"#1e2230"}`,
+              borderRadius:9,padding:"0.4rem 0.25rem",cursor:"pointer",
+              minHeight:64,display:"flex",flexDirection:"column",alignItems:"center",gap:2
+            }}>
+              <span style={{color:isToday?"#6366f1":i%7===6?"#ef4444":i%7===5?"#8b5cf6":"#9ca3af",
+                fontSize:"0.78rem",fontWeight:isToday?800:400,fontFamily:"'JetBrains Mono',monospace"}}>{d}</span>
+              {mins>0&&<>
+                <div style={{width:"80%",height:3,background:c?.bg||"#6366f1",borderRadius:99,opacity:0.8}}/>
+                <span style={{color:c?.text||"#a5b4fc",fontSize:"0.6rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>
+                  {Math.floor(mins/60)}h{mins%60?mins%60+"m":""}
+                </span>
+              </>}
+              {plans.length>0&&<div style={{fontSize:"0.58rem",lineHeight:1}}>
+                {done>0&&<span style={{color:"#22c55e"}}>✅{done}</span>}
+                {failed>0&&<span style={{color:"#ef4444"}}> ❌{failed}</span>}
+                {plans.filter(p=>p.status==="todo").length>0&&<span style={{color:"#6366f1"}}> ·{plans.filter(p=>p.status==="todo").length}</span>}
+              </div>}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 선택된 날짜의 일간 계획 상세 */}
+      {selectedDay && (
+        <div style={{marginTop:10,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,padding:"1rem"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+            <span style={{color:"#f1f3f9",fontWeight:800,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+              {selDateStr} {selDateStr===today?"(오늘)":""}
+            </span>
+            <button onClick={()=>onSelectDate(selDateStr)} style={{
+              background:"#6366f120",border:"1px solid #6366f140",borderRadius:7,color:"#818cf8",
+              cursor:"pointer",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.3rem 0.7rem",fontWeight:700
+            }}>타임테이블 열기 →</button>
+          </div>
+          {selDayPlans.length===0
+            ? <div style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif"}}>이 날 등록된 계획 없음</div>
+            : selDayPlans.map(p=>{
+                const c=SUBJECT_COLORS[p.subject];
+                const statusColor = p.status==="done"?"#22c55e":p.status==="failed"?"#ef4444":"#6b7280";
+                const statusLabel = p.status==="done"?"✅ 완료":p.status==="failed"?"❌ 실패":"○ 예정";
+                return (
+                  <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"0.3rem 0",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+                    <span style={{color:statusColor,fontSize:"0.72rem",flexShrink:0}}>{statusLabel}</span>
+                    <span style={{color:c?.text||"#a5b4fc",fontWeight:700,flexShrink:0}}>{p.subject}</span>
+                    <span style={{color:p.status==="done"?"#4b5563":"#d1d5db",textDecoration:p.status==="done"?"line-through":"none"}}>{p.content}</span>
+                  </div>
+                );
+              })
+          }
+        </div>
+      )}
+
+      {/* 월간 통계 */}
+      <div style={{marginTop:"1.2rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,padding:"1rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10}}>이번 달 누적</div>
+        {(()=>{
+          const monthSubMins={};
+          for(let d=1;d<=daysInMonth;d++){
+            const sm=calcSubjectMinutes(data.timetable[ds(d)]||{});
+            for(const [s,m] of Object.entries(sm))monthSubMins[s]=(monthSubMins[s]||0)+m;
+          }
+          const total=Object.values(monthSubMins).reduce((a,b)=>a+b,0)||1;
+          const sorted=Object.entries(monthSubMins).sort((a,b)=>b[1]-a[1]);
+          const mp=(data.plans2||[]).filter(p=>p.date.startsWith(year+"-"+String(month+1).padStart(2,"0")));
+          const rate=mp.length>0?Math.round((mp.filter(p=>p.status==="done").length/mp.length)*100):null;
+          return <>
+            {sorted.slice(0,5).map(([sub,m])=>{
+              const c=SUBJECT_COLORS[sub];
+              return <div key={sub} style={{marginBottom:7}}>
+                <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
+                  <span style={{color:c?.text,fontSize:"0.75rem",fontWeight:700,fontFamily:"'Noto Sans KR',sans-serif"}}>{sub}</span>
+                  <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{Math.floor(m/60)}h {m%60}m</span>
+                </div>
+                <div style={{height:4,background:"#111318",borderRadius:99,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${(m/total)*100}%`,background:c?.bg,borderRadius:99}}/>
+                </div>
+              </div>;
+            })}
+            {rate!==null&&<div style={{marginTop:8,color:"#f59e0b",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>계획 달성률 {rate}%</div>}
+          </>;
+        })()}
+      </div>
+    </div>
+  );
+}
+
+// ── 레퍼런스 패널 ──────────────────────────────────────────────────────────────
+const REF_DATA = {
+  수학: {
+    color:"#6366f1",
+    출제경향:["조건 다중처리 — 조건 2개 이상 동시에 처리해야 풀림","배점정교화 — 부분 배점 까다로움","조건 누락 유도 — 조건 놓치면 함정에 빠짐","3개 틀림 패턴: 두 개는 계산실수(무조건 1글쓰고 1번 검산) + 나머지 문제 대충 읽음"],
+    공부법:["처음 20초: 계산 금지. 조건/목표/개념 후보만 파악","정의 번역: 중점→AM=MB, 수직→90°, 이등변→AB=AC","조건 4추적: 왜 줬지? / 어디 쓰이지? / 없으면? / 생산하는 정보는?","막혔을 때: '왜 안 풀리지?' 금지 → 내 정보/조건/관계/개념 체크","정답 후 복기: 왜 먹혔지? 더 빠른 방법? 핵심 조건? 출제 의도?","틀리면 즉시 AI에게 찍어서 논리 추적 → 원인 분류 → 재도전","하루 1문제 연구: 핵심조건/정의번역/출제의도/함정/최적풀이 분석"],
+    오답분류:{"XC":"조건·정의 관련 개념 누락","XM-F":"조건 정독 안 해서 놓침 (가장 중요, 최상위권 차이)","XM-V":"계산 후 검토 안 해서 실수 못 잡음","XJ":"조건 4추적 이해했지만 실제 적용 실패"},
+  },
+  국어: {
+    color:"#f59e0b",
+    출제경향:["선지 O/X 체크 안 하면 함정 — 틀린 이유에 집중","새 관점/개념 제시 → 비어있으면 낚힘","복합지문 비교↑, 중층적 vs 차이점 문제 多","논증-주론 지문 핵심 문장 넣는 문제↑","서술형: 조건 기반 빈칸수, 대충 느낌으로는 X","선지 잠정 매우 교묘 — 끝까지 의심"],
+    공부법:["구조 30초 설명: 시(화자→정서→변화→주제) / 소설(인물→갈등→사건→결말)","출제자 모드: '내가 선생님이면 어디를 바꿔 틀리게 할까?' 매번","7가지 비틀기: 주체/원인/결과/감정/시간/범위/단정(항상·반드시·완전히·오직)","소재/지시어/시어: '~은 ~을 의미한다' 형태로 문장 저장","개념공부: 이해→적용→산출 공법 (단순 암기 X, 적용이 포인트)","배경개념 → 직접 예문/선지 만들어보기","서술형: 우선적 조건 먼저 쓰기"],
+    오답분류:{"XC":"작품/문법 개념 누락","XM-F":"지문 정독 안 해서 근거 놓침","XM-T/F":"옳은것/옳지않은것 헷갈림","XJ":"개념은 아는데 선지에 적용 못함"},
+  },
+  한국사: {
+    color:"#8b5cf6",
+    출제경향:["암기만으로 안 됨 → 5개 틀림 패턴: 글X/안알려진 문제 몰라서/사료 참고X","사료제시 → 판별 → 근거 문제↑","축 쌓기: 정치사+제도사/문화사/경제사","선지 매우 교묘 — 마지막 선지까지 정독","한 사건 속 정밀한 시간 흐름 파악 요구"],
+    공부법:["사료 공부법: 사료보기 → 어느 시대? → 어느 사건/제도/인물? → 왜 그렇게 됐나?","평소 암기독 + 단위/시기 끝날 때마다 정리: 제도?문화?경제?","무언가 이상한 선지 = 무조건 의심","답 바꾸지 X","형광펜 계층구조 후 반드시 백지로 구조 재현 테스트","문제 중 더 풀기: 문제정중에 더 풀기, 3원인 풀기"],
+    오답분류:{"XC":"암기 부족/세부 개념 흐릿","XM-F":"사료 정독 안 해서 근거 놓침","XM-T/F":"옳은것/옳지않은것 헷갈림","XJ":"시대는 아는데 사건 연결 적용 실패"},
+  },
+  사회: {
+    color:"#ec4899",
+    출제경향:["자료 해석에서 내 언어로 다시 이해해야 함","선지 개별 검증, 자략인 듯한 선지도 검증 필요","통계 기반 맞춤 필터링 + 문제 응용↑"],
+    공부법:["백지회독 + 계층 구조화 (개념 관계와 인과 중심)","자료 해석: 내 언어로 다시 이해 → 선지 개별 검증","통계/그래프: 수치 직접 계산해서 검증"],
+    오답분류:{"XC":"개념 누락","XM-F":"자료·조건 정독 안 해서 놓침","XJ":"개념은 아는데 자료 해석에 적용 못함"},
+  },
+};
+
+// ── 집중 시스템 (조사 기반 정리) ─────────────────────────────────────────────────
+const FOCUS_SYSTEM = {
+  진단: "한 달 전엔 새로 시작한 시스템 자체의 신선함이 뇌를 자동 각성시켰음. 반복되면서 신선함이 사라지고 책상이 '익숙한 공간 = 이완 신호'로 조건화됨. 의지력 문제가 아니라 조건화의 문제.",
+  단계: [
+    { title:"1단계 — 신체 각성 트리거 (30초~2분)", body:"찬물 세수 또는 손목까지 찬물. 노르에피네프린이 스파이크되며 크래시 없이 몇 시간 각성 유지됨. (냉수 노출 연구: 노르에피네프린 최대 530%, 도파민 최대 250% 상승)" },
+    { title:"2단계 — 고정된 착석 의식 (1~2분)", body:"매번 완전히 동일한 순서로 시작. 의지력을 아끼기 위해 시작 행동 자체를 자동화 (Cal Newport, Deep Work의 'Ritualize' 원칙). 앉기 → 계획 3줄 쓰기 → 타이머 시작." },
+    { title:"3단계 — 워밍업 구간은 쉬운 것부터", body:"주의 회로가 각성하는 데 최소 5~10분 필요. 처음부터 어려운 문제 시작하면 막힘→좌절→졸림으로 이어짐. 첫 10분은 어제 오답 복습처럼 가장 쉬운 것." },
+    { title:"4단계 — 15분 타이머, 판단 없이 자동 연장", body:"'오늘 할 만한가', '집중되나' 같은 질문 자체를 하지 않음. 타이머 끝나면 그냥 다음 세션으로. 감정 상태와 완전히 분리된 실행." },
+    { title:"5단계 — 자극 통제: 잡생각 = 즉시 이탈", body:"불면증 치료의 핵심 원리 응용. 잡생각이 들면 그 즉시 일어나서 자리 이탈 → 10~20초 후 재착석. 앉아서 잡생각과 씨름하면 뇌가 '책상=잡생각 가능한 곳'으로 학습함. 즉시 이탈하면 '책상=집중만 가능한 곳'으로 재조건화됨. 단, 어려워서 하기 싫은 회피와는 구분 — 순수 집중력 흐트러짐에만 적용." },
+  ],
+  원칙: [
+    "공간 분리: 책상에서는 절대 쉬지 않음. 폰, 눕기 등은 다른 공간에서만.",
+    "판단하지 않기: 매번 '오늘 컨디션이 어떤지' 체크하지 않고 정해진 순서 그대로 실행.",
+    "최소 2주 동일하게 반복해야 재조건화가 걸림. 중간에 루틴 바꾸면 처음부터 다시.",
+    "재미는 있어도 없어도 실행하는 것 — 감정 상태에 의존하지 않는 시스템으로 설계.",
+  ],
+  출처: "Andrew Huberman (Stanford, 신경생물학) 도파민·각성 연구, Cal Newport (Georgetown) Deep Work 리추얼 이론, 자극 통제(Stimulus Control) 불면증 치료 원리 응용",
+};
+
+function ReferencePanel({wrongs}) {
+  const [refTab,setRefTab]=useState("subject"); // subject | focus
+  const [activeSub,setActiveSub]=useState("수학");
+  const ref=REF_DATA[activeSub];
+  const c=SUBJECT_COLORS[activeSub];
+  const subWrongs=wrongs.filter(w=>w.subject===activeSub);
+  const byCode={};
+  for(const w of subWrongs)byCode[w.code]=(byCode[w.code]||0)+1;
+  const sorted=Object.entries(byCode).sort((a,b)=>b[1]-a[1]);
+
+  return (
+    <div>
+      {/* 상위 탭: 과목별 자료 / 집중법 */}
+      <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:9,padding:3,marginBottom:"1rem"}}>
+        {[["subject","과목별 자료"],["focus","🧠 집중 시스템"]].map(([v,l])=>(
+          <button key={v} onClick={()=>setRefTab(v)} style={{
+            flex:1,padding:"0.4rem 0.6rem",borderRadius:6,border:"none",cursor:"pointer",
+            background:refTab===v?"#6366f1":"transparent",color:refTab===v?"white":"#6b7280",
+            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:700
+          }}>{l}</button>
+        ))}
+      </div>
+
+      {refTab==="subject" && (
+        <div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:"1.2rem"}}>
+            {Object.keys(REF_DATA).map(sub=>{
+              const sc=SUBJECT_COLORS[sub];
+              return <button key={sub} onClick={()=>setActiveSub(sub)} style={{
+                padding:"0.3rem 0.8rem",borderRadius:8,cursor:"pointer",
+                border:`2px solid ${activeSub===sub?sc.bg:"transparent"}`,
+                background:sc.light,color:sc.text,
+                fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700,
+                boxShadow:activeSub===sub?`0 0 10px ${sc.bg}50`:undefined
+              }}>{sub}</button>;
+            })}
+          </div>
+
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {/* 오답 현황 */}
+            <div style={{background:"#0a0c12",border:`1px solid ${c?.bg}30`,borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:c?.text,fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>
+                ❌ {activeSub} 오답 현황 — 총 {subWrongs.length}개
+              </div>
+              {sorted.length===0
+                ?<div style={{color:"#2d3241",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>아직 오답 없음</div>
+                :<div style={{display:"flex",flexDirection:"column",gap:7}}>
+                  {sorted.map(([code,cnt])=>{
+                    const ec=ERROR_CODES[code];
+                    const pct=Math.round((cnt/subWrongs.length)*100);
+                    return <div key={code}>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,alignItems:"center"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6}}><Tag code={code}/><span style={{color:"#6b7280",fontSize:"0.73rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{ec?.desc}</span></div>
+                        <span style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace"}}>{cnt}개 ({pct}%)</span>
+                      </div>
+                      <div style={{height:4,background:"#111318",borderRadius:99,overflow:"hidden"}}>
+                        <div style={{height:"100%",width:`${pct}%`,background:ec?.color||c?.bg,borderRadius:99}}/>
+                      </div>
+                    </div>;
+                  })}
+                </div>
+              }
+            </div>
+
+            {/* 출제 경향 */}
+            <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:"#ef4444",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>🎯 우리 학교 출제 경향</div>
+              <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                {ref.출제경향.map((t,i)=><div key={i} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                  <span style={{color:"#ef4444",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",flexShrink:0,marginTop:2,fontWeight:700}}>{String(i+1).padStart(2,"0")}</span>
+                  <span style={{color:"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>{t}</span>
+                </div>)}
+              </div>
+            </div>
+
+            {/* 공부법 */}
+            <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:"#10b981",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>📚 공부법 핵심</div>
+              <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                {ref.공부법.map((t,i)=><div key={i} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"0.5rem 0.65rem",background:"#0d0f18",borderRadius:8,border:"1px solid #1a1d27"}}>
+                  <span style={{color:c?.text,fontSize:"0.62rem",fontFamily:"'JetBrains Mono',monospace",flexShrink:0,marginTop:2,fontWeight:700}}>{String(i+1).padStart(2,"0")}</span>
+                  <span style={{color:"#c9cbd4",fontSize:"0.79rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65}}>{t}</span>
+                </div>)}
+              </div>
+            </div>
+
+            {/* 오답 코드 정의 */}
+            <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+              <div style={{color:"#f59e0b",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>🔍 이 과목 오답 코드 의미</div>
+              <div style={{display:"flex",flexDirection:"column",gap:5}}>
+                {Object.entries(ref.오답분류).map(([code,desc])=><div key={code} style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <Tag code={code}/><span style={{color:"#6b7280",fontSize:"0.77rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{desc}</span>
+                </div>)}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {refTab==="focus" && (
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {/* 진단 */}
+          <div style={{background:"#6366f112",border:"1px solid #6366f130",borderRadius:13,padding:"1.1rem"}}>
+            <div style={{color:"#6366f1",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8,fontWeight:700}}>🩺 진단 — 왜 예전엔 됐고 지금은 안 되는가</div>
+            <div style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.7}}>{FOCUS_SYSTEM.진단}</div>
+          </div>
+
+          {/* 5단계 루틴 */}
+          <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+            <div style={{color:"#f59e0b",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>⚡ 시작 루틴 — 매번 동일하게 실행</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8}}>
+              {FOCUS_SYSTEM.단계.map((s,i)=>(
+                <div key={i} style={{padding:"0.7rem 0.85rem",background:"#0d0f18",borderRadius:9,border:"1px solid #1a1d27"}}>
+                  <div style={{color:"#fbbf24",fontSize:"0.8rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:4}}>{s.title}</div>
+                  <div style={{color:"#9ca3af",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65}}>{s.body}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 핵심 원칙 */}
+          <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:13,padding:"1.1rem"}}>
+            <div style={{color:"#22c55e",fontSize:"0.68rem",textTransform:"uppercase",letterSpacing:"0.07em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:10,fontWeight:700}}>✅ 핵심 원칙</div>
+            <div style={{display:"flex",flexDirection:"column",gap:6}}>
+              {FOCUS_SYSTEM.원칙.map((t,i)=>(
+                <div key={i} style={{display:"flex",gap:8,alignItems:"flex-start"}}>
+                  <span style={{color:"#22c55e",fontSize:"0.7rem",flexShrink:0,marginTop:2}}>✓</span>
+                  <span style={{color:"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>{t}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* 출처 */}
+          <div style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,padding:"0.3rem 0.2rem"}}>
+            📖 근거: {FOCUS_SYSTEM.출처}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 메인 ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [data,setData]=useState(load);
+  const [tab,setTab]=useState("schedule");
+  const [modal,setModal]=useState(null);
+  const [editWrong,setEditWrong]=useState(null);
+  const [scheduleDate,setScheduleDate]=useState(todayStr());
+  const [practiceQueue,setPracticeQueue]=useState(null); // array of wrong entries with photo
+  const [syncStatus,setSyncStatus]=useState("idle"); // idle | syncing | synced | error
+  const cloudTimerRef = useRef(null);
+  const initialSyncDone = useRef(false);
+
+  // 앱 켜질 때 클라우드 데이터와 로컬 데이터 중 "더 최신"인 쪽을 사용
+  // (빈 클라우드 데이터가 로컬의 실제 기록을 덮어쓰는 사고를 방지)
+  useEffect(()=>{
+    (async () => {
+      setSyncStatus("syncing");
+      const cloudResult = await cloudLoad();
+      const localData = load();
+
+      if (!cloudResult.ok) {
+        // 클라우드 요청 자체가 실패 (네트워크/API 오류) → 로컬 유지, 실패 표시
+        setData(localData);
+        initialSyncDone.current = true;
+        setSyncStatus("error");
+        return;
+      }
+
+      const cloudData = cloudResult.data;
+      const localTime = localData?._syncedAt || 0;
+      const cloudTime = cloudData?._syncedAt || 0;
+
+      // 클라우드 데이터가 사실상 비어있으면 (한 번도 저장 안 된 경우) 무시하고 로컬 유지
+      const cloudIsEmpty = !cloudData || (
+        Object.keys(cloudData.timetable||{}).length===0 &&
+        (cloudData.wrongs||[]).length===0 &&
+        (cloudData.elsExperiments||[]).length===0 &&
+        (cloudData.plans2||[]).length===0
+      );
+
+      if (!cloudIsEmpty && cloudTime > localTime) {
+        // 클라우드가 더 최신 → 클라우드 데이터 채택
+        setData(cloudData);
+        save(cloudData);
+      } else {
+        // 로컬이 더 최신이거나 클라우드가 비어있음 → 로컬 유지하고 클라우드에 업로드
+        setData(localData);
+        const ok = await cloudSave({ ...localData, _syncedAt: Date.now() });
+        if (!ok) { initialSyncDone.current = true; setSyncStatus("error"); return; }
+      }
+      initialSyncDone.current = true;
+      setSyncStatus("synced");
+    })();
+  },[]);
+
+  // 로컬 저장은 즉시, 클라우드 저장은 1초 디바운스로 (너무 잦은 요청 방지)
+  useEffect(()=>{
+    save(data);
+    if (!initialSyncDone.current) return; // 초기 로드 직후 자기 자신 덮어쓰기 방지
+    if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
+    setSyncStatus("syncing");
+    cloudTimerRef.current = setTimeout(async () => {
+      const stamped = { ...data, _syncedAt: Date.now() };
+      save(stamped);
+      const ok = await cloudSave(stamped);
+      setSyncStatus(ok ? "synced" : "error");
+    }, 1000);
+    return () => { if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current); };
+  },[data]);
+
+  const addWrong=w=>setData(d=>({...d,wrongs:[...d.wrongs,w]}));
+  const updateWrong=w=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===w.id?w:e)}));
+  const updateWrongCounts=(id,patch)=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===id?{...e,...patch}:e)}));
+  const delWrong=id=>setData(d=>({...d,wrongs:d.wrongs.filter(e=>e.id!==id)}));
+  const renameFolder=(key,name)=>setData(d=>({...d,folderNames:{...(d.folderNames||{}),[key]:name}}));
+
+  function handlePracticeResult(entry, result) {
+    setData(d=>({
+      ...d,
+      wrongs: d.wrongs.map(w=>{
+        if(w.id!==entry.id) return w;
+        return {
+          ...w,
+          attemptCount: (w.attemptCount||0)+1,
+          failCount: result==="wrong" ? (w.failCount||0)+1 : (w.failCount||0),
+          solved: result==="correct" ? true : w.solved,
+          lastPracticed: todayStr(),
+        };
+      })
+    }));
+  }
+
+  // 이번 주 통계
+  const now=new Date();
+  const weekStart=new Date(now);weekStart.setDate(now.getDate()-6);
+  let weekMins=0;
+  for(let d=new Date(weekStart);d<=now;d.setDate(d.getDate()+1)){
+    const ds=d.toISOString().slice(0,10);
+    weekMins+=calcMinutes(data.timetable[ds]||{});
+  }
+  const weekWrongs=data.wrongs.filter(w=>new Date(w.date)>=weekStart).length;
+
+  const tabs=[
+    {id:"schedule",label:"계획+타임테이블"},
+    {id:"goals",label:"목표"},
+    {id:"methods",label:"ELS 공부법"},
+    {id:"calendar",label:"달력"},
+    {id:"wrongs",label:`오답 (${data.wrongs.length})`},
+    {id:"ref",label:"레퍼런스"},
+  ];
+
+  return (
+    <div style={{minHeight:"100vh",background:"#080910",fontFamily:"'Noto Sans KR',sans-serif"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0;}
+        @keyframes pulse{0%,100%{opacity:0.3;transform:scale(0.8)}50%{opacity:1;transform:scale(1)}}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .fade{animation:fadeUp 0.3s ease forwards;}
+        button{transition:opacity 0.12s;}button:hover{opacity:0.82;}
+        ::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:#1e2230;border-radius:2px;}
+        input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.4);}
+        .schedule-grid{grid-template-columns:1fr;}
+        @media(min-width:720px){.schedule-grid{grid-template-columns:1.2fr 1fr;}}
+      `}</style>
+
+      {/* 헤더 */}
+      <header style={{borderBottom:"1px solid #13151e",padding:"1rem 1.5rem",
+        display:"flex",justifyContent:"space-between",alignItems:"center",
+        position:"sticky",top:0,background:"rgba(8,9,16,0.97)",backdropFilter:"blur(16px)",zIndex:100}}>
+        <div>
+          <div style={{color:"#f1f3f9",fontSize:"1rem",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",letterSpacing:"-0.02em"}}>
+            STUDY<span style={{color:"#6366f1"}}>_OS</span>
+          </div>
+          <div style={{color:"#2d3241",fontSize:"0.62rem",marginTop:1,fontFamily:"'JetBrains Mono',monospace",display:"flex",alignItems:"center",gap:5}}>
+            극상위권 학습 시스템
+            <span style={{
+              display:"inline-flex",alignItems:"center",gap:3,
+              color:syncStatus==="syncing"?"#f59e0b":syncStatus==="error"?"#ef4444":"#22c55e"
+            }}>
+              <span style={{width:5,height:5,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>
+              {syncStatus==="syncing"?"동기화 중":syncStatus==="error"?"동기화 실패 (F12 콘솔 확인)":"동기화됨"}
+            </span>
+            {syncStatus==="error"&&(
+              <button onClick={()=>{
+                setSyncStatus("syncing");
+                cloudSave({...data,_syncedAt:Date.now()}).then(ok=>setSyncStatus(ok?"synced":"error"));
+              }} style={{background:"none",border:"1px solid #ef444450",borderRadius:5,color:"#ef4444",cursor:"pointer",fontSize:"0.6rem",padding:"0.05rem 0.4rem",fontFamily:"'Noto Sans KR',sans-serif"}}>재시도</button>
+            )}
+          </div>
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          <Btn small color="#ef4444" onClick={()=>{setEditWrong(null);setModal("wrong");}}>오답 등록</Btn>
+          <Btn small outline color="#4b5563" onClick={()=>setModal("backup")}>백업</Btn>
+        </div>
+      </header>
+
+      <main style={{maxWidth:900,margin:"0 auto",padding:"1.4rem 1rem"}}>
+
+        {/* 리포트 내보내기 버튼 */}
+        <div style={{display:"flex",gap:7,marginBottom:"1.2rem",flexWrap:"wrap"}}>
+          <button onClick={()=>setModal("report")} style={{
+            padding:"0.52rem 1.1rem",borderRadius:9,border:"none",
+            background:"linear-gradient(135deg,#6366f1,#8b5cf6)",
+            color:"white",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,fontSize:"0.8rem",cursor:"pointer",
+            boxShadow:"0 3px 14px #6366f135"}}>📋 기간별 리포트 내보내기</button>
+        </div>
+
+        {/* 스탯 */}
+        <div style={{display:"flex",gap:8,marginBottom:"1.2rem",flexWrap:"wrap"}}>
+          {[
+            ["이번 주",`${Math.floor(weekMins/60)}h ${weekMins%60}m`,"#6366f1"],
+            ["주간 오답",`${weekWrongs}개`,"#ef4444"],
+            ["총 오답",`${data.wrongs.length}개`,"#f59e0b"],
+          ].map(([l,v,c])=>(
+            <div key={l} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.8rem 1rem",flex:1,minWidth:100}}>
+              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.06em",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:3}}>{l}</div>
+              <div style={{color:c,fontSize:"1.4rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* 탭 */}
+        <div style={{display:"flex",gap:3,background:"#0a0c12",borderRadius:10,padding:3,border:"1px solid #1e2230",marginBottom:"1.2rem"}}>
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{
+              flex:1,padding:"0.45rem 0.4rem",borderRadius:7,border:"none",cursor:"pointer",
+              background:tab===t.id?"linear-gradient(135deg,#6366f1,#8b5cf6)":"transparent",
+              color:tab===t.id?"white":"#4b5563",
+              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:tab===t.id?700:400}}>{t.label}</button>
+          ))}
+        </div>
+
+        <div className="fade" key={tab}>
+          {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}/>}
+          {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
+          {tab==="methods"&&<ELSSystem data={data} setData={setData}/>}
+          {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
+          {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}
+            onPractice={e=>setPracticeQueue([e])}
+            onPracticeGroup={list=>setPracticeQueue(list)}
+            onUpdateCounts={updateWrongCounts}
+          />}
+          {tab==="ref"&&<ReferencePanel wrongs={data.wrongs}/>}
+        </div>
+      </main>
+
+      {/* 모달 */}
+      {modal==="wrong"&&<WrongForm editData={editWrong} onSave={w=>{editWrong?updateWrong(w):addWrong(w);setModal(null);setEditWrong(null);}} onClose={()=>{setModal(null);setEditWrong(null);}} onDelete={id=>{delWrong(id);setModal(null);setEditWrong(null);}}/>}
+      {modal==="backup"&&<BackupModal data={data} onImport={d=>setData(d)} onClose={()=>setModal(null)}/>}
+      {modal==="report"&&<ReportExport data={data} onClose={()=>setModal(null)}/>}
+      {practiceQueue&&practiceQueue.length>0&&(
+        <PracticeMode queue={practiceQueue} onExit={()=>setPracticeQueue(null)} onResult={handlePracticeResult}/>
+      )}
+    </div>
+  );
+}
