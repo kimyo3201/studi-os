@@ -2,9 +2,10 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학","기타"];
-const ELS_SUBJECTS = ["수학","국어","영어","과학","사회","한국사"];
-// 과목별 세분화 항목. 빈 배열이면 세분화 없이 과목 자체가 하나의 단위(한국사).
+const ELS_SUBJECTS = ["전과목 공통","수학","국어","영어","과학","사회","한국사"];
+// 과목별 세분화 항목. 빈 배열이면 세분화 없이 과목 자체가 하나의 단위(전과목 공통, 한국사).
 const ELS_SUBCATEGORIES = {
+  "전과목 공통": [],
   국어: ["내신","모의고사-문학","모의고사-문법","모의고사-비문학"],
   수학: ["내신","모의고사"],
   영어: ["독해","문법","단어암기"],
@@ -25,6 +26,7 @@ const ELS_TRACKS = [
 ];
 
 const SUBJECT_COLORS = {
+  "전과목 공통": { bg:"#818cf8", light:"#818cf830", text:"#c7d2fe" }, // 인디고
   수학:   { bg:"#eab308", light:"#eab30830", text:"#fde047" }, // 노랑
   영어:   { bg:"#a855f7", light:"#a855f730", text:"#d8b4fe" }, // 보라
   국어:   { bg:"#ef4444", light:"#ef444430", text:"#fca5a5" }, // 빨강
@@ -1846,6 +1848,4 @@ function TrackBlock({subject, sub, track, experiments, onSave, onScore, onDelete
           <div style={{color:"#6b7280",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:7}}>{track.desc}</div>
           {list.length===0
             ? <div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 실험법 없음</div>
-            : <div style={{display:"flex",flexDirection:"column",gap:5}}>
-                {list.map((exp,i)=>(
-                  <ExperimentRow key
+            : <div style={{display:"flex",
