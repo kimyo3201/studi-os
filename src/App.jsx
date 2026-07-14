@@ -112,8 +112,8 @@ const SYNC_ROW_ID = "main"; // 한 명이 쓰는 앱이라 고정 row 하나만 
 async function cloudLoad() {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}&select=data`, {
-      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
-    });
+  headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Accept-Profile": "public" }
+});
     if (!res.ok) {
       console.error("cloudLoad failed:", res.status, await res.text());
       return { ok:false, data:null };
@@ -131,11 +131,12 @@ async function cloudSave(d) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data`, {
       method: "POST",
       headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json",
-        Prefer: "resolution=merge-duplicates,return=minimal"
-      },
+  apikey: SUPABASE_KEY,
+  Authorization: `Bearer ${SUPABASE_KEY}`,
+  "Content-Type": "application/json",
+  "Content-Profile": "public",
+  Prefer: "resolution=merge-duplicates,return=minimal"
+},
       body: JSON.stringify({ id: SYNC_ROW_ID, data: d, updated_at: new Date().toISOString() })
     });
     if (!res.ok) {
