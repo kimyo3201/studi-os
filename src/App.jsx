@@ -112,8 +112,8 @@ const SYNC_ROW_ID = "main"; // 한 명이 쓰는 앱이라 고정 row 하나만 
 async function cloudLoad() {
   try {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}&select=data`, {
-  headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Accept-Profile": "public" }
-});
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Accept-Profile": "public" }
+    });
     if (!res.ok) {
       console.error("cloudLoad failed:", res.status, await res.text());
       return { ok:false, data:null };
@@ -131,12 +131,12 @@ async function cloudSave(d) {
     const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data`, {
       method: "POST",
       headers: {
-  apikey: SUPABASE_KEY,
-  Authorization: `Bearer ${SUPABASE_KEY}`,
-  "Content-Type": "application/json",
-  "Content-Profile": "public",
-  Prefer: "resolution=merge-duplicates,return=minimal"
-},
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        "Content-Profile": "public",
+        Prefer: "resolution=merge-duplicates,return=minimal"
+      },
       body: JSON.stringify({ id: SYNC_ROW_ID, data: d, updated_at: new Date().toISOString() })
     });
     if (!res.ok) {
@@ -470,16 +470,17 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
   );
 }
 
-function PlanCard({plan,onStatus,onEdit,onDelete}) {
+function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStopTimer}) {
   const c=SUBJECT_COLORS[plan.subject];
   const statusStyle = {
     todo:  {bg:"#1e2230", color:"#6b7280", label:"예정"},
     done:  {bg:"#22c55e20", color:"#22c55e", label:"✅ 완료"},
     failed:{bg:"#ef444420", color:"#ef4444", label:"❌ 실패"},
   }[plan.status]||{bg:"#1e2230",color:"#6b7280",label:"예정"};
+  const isRunning = activeTimer && activeTimer.planId===plan.id;
 
   return (
-    <div style={{background:"#0a0c12",border:`1px solid ${plan.status==="done"?"#22c55e30":plan.status==="failed"?"#ef444430":"#1e2230"}`,
+    <div style={{background:"#0a0c12",border:`1px solid ${isRunning?(c?.bg||"#6366f1"):plan.status==="done"?"#22c55e30":plan.status==="failed"?"#ef444430":"#1e2230"}`,
       borderRadius:11,padding:"0.85rem 1rem",marginBottom:6,opacity:plan.status==="done"?0.7:1}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
         <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -504,6 +505,25 @@ function PlanCard({plan,onStatus,onEdit,onDelete}) {
         </div>
       )}
       {plan.note&&<div style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>📌 {plan.note}</div>}
+
+      {/* 타이머 버튼 */}
+      {plan.status==="todo"&&onStartTimer&&(
+        <div style={{marginBottom:6}}>
+          {isRunning ? (
+            <button onClick={onStopTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444418",color:"#ef4444",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>■ 타이머 정지</button>
+          ) : (
+            <button onClick={()=>onStartTimer(plan)} disabled={!!activeTimer} style={{
+              width:"100%",padding:"0.4rem",borderRadius:7,
+              border:`1px solid ${activeTimer?"#2a2d3a":(c?.bg||"#6366f1")+"50"}`,
+              background:activeTimer?"transparent":(c?.bg||"#6366f1")+"18",
+              color:activeTimer?"#4b5563":(c?.text||"#a5b4fc"),
+              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700,
+              cursor:activeTimer?"not-allowed":"pointer"
+            }}>{activeTimer?"다른 타이머 실행 중":"▶ 타이머 시작"}</button>
+          )}
+        </div>
+      )}
+
       {/* 상태 버튼 */}
       {plan.status==="todo"&&(
         <div style={{display:"flex",gap:6}}>
@@ -2105,7 +2125,7 @@ function ELSSystem({data, setData}) {
 }
 
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
-function ScheduleView({data,setData,initDate}) {
+function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTimer}) {
   const [date,setDate]=useState(initDate||todayStr());
   const [paintSubject,setPaintSubject]=useState("수학");
   const [erasing,setErasing]=useState(false);
@@ -2253,7 +2273,8 @@ function ScheduleView({data,setData,initDate}) {
               {dayPlans.length===0
                 ?<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>계획 없음</div>
                 :dayPlans.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus}
-                    onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}/>)
+                    onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}
+                    activeTimer={activeTimer} onStartTimer={onStartTimer} onStopTimer={onStopTimer}/>)
               }
             </>
           )}
@@ -2280,7 +2301,8 @@ function ScheduleView({data,setData,initDate}) {
                       <div onClick={()=>setDate(wd)} style={{cursor:"pointer",color:wd===todayStr()?"#6366f1":"#6b7280",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>
                         {DAY_KO[i]} · {wd.slice(5)}
                       </div>
-                      {wp.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus} onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}/>)}
+                      {wp.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus} onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}
+                        activeTimer={activeTimer} onStartTimer={onStartTimer} onStopTimer={onStopTimer}/>)}
                     </div>
                   );
                 })}
@@ -2711,6 +2733,50 @@ export default function App() {
   const cloudTimerRef = useRef(null);
   const initialSyncDone = useRef(false);
 
+  // ── 계획 실행 타이머 (전역: 탭 이동해도 유지) ──────────────────────────────────
+  const [activeTimer,setActiveTimer]=useState(null); // { planId, subject, content, startedAt(ms), date }
+  const [timerTick,setTimerTick]=useState(0); // 1초마다 갱신용 더미 state
+  useEffect(()=>{
+    if(!activeTimer) return;
+    const iv=setInterval(()=>setTimerTick(t=>t+1),1000);
+    return ()=>clearInterval(iv);
+  },[activeTimer]);
+
+  function startTimer(plan){
+    setActiveTimer({planId:plan.id, subject:plan.subject, content:plan.content, startedAt:Date.now(), date:plan.date});
+  }
+  function stopTimer(){
+    if(!activeTimer) return;
+    const elapsedMs = Date.now()-activeTimer.startedAt;
+    const elapsedMin = Math.round(elapsedMs/60000);
+    if(elapsedMin>=1){
+      // 타이머 시작 시각부터 elapsedMin 분만큼 10분 슬롯을 자동으로 채움
+      const startDate = new Date(activeTimer.startedAt);
+      const dateStr = `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,"0")}-${String(startDate.getDate()).padStart(2,"0")}`;
+      const startTotalMin = startDate.getHours()*60+startDate.getMinutes();
+      const startOffsetFromWindow = ((startTotalMin - START_HOUR*60)+1440)%1440; // 06:00 기준 오프셋(분)
+      const startSlot = Math.floor(startOffsetFromWindow/10);
+      const slotCount = Math.max(1, Math.round(elapsedMin/10));
+      setData(d=>{
+        const tt={...d.timetable};
+        const day={...(tt[dateStr]||{})};
+        for(let i=0;i<slotCount;i++){
+          const si=(startSlot+i)%TOTAL_SLOTS;
+          day[si]=activeTimer.subject;
+        }
+        tt[dateStr]=day;
+        return {...d, timetable:tt};
+      });
+    }
+    setActiveTimer(null);
+  }
+  function timerElapsedLabel(){
+    if(!activeTimer) return "";
+    const sec=Math.floor((Date.now()-activeTimer.startedAt)/1000);
+    const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
+    return h>0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}` : `${m}:${String(s).padStart(2,"0")}`;
+  }
+
   // 앱 켜질 때 클라우드 데이터와 로컬 데이터 중 "더 최신"인 쪽을 사용
   // (빈 클라우드 데이터가 로컬의 실제 기록을 덮어쓰는 사고를 방지)
   useEffect(()=>{
@@ -2856,6 +2922,24 @@ export default function App() {
         </div>
       </header>
 
+      {/* 실행 중인 타이머 바 — 어느 탭에 있든 항상 보임 */}
+      {activeTimer&&(()=>{const _=timerTick; const c=SUBJECT_COLORS[activeTimer.subject]; return (
+        <div style={{
+          position:"sticky",top:64,zIndex:99,
+          background:`${c?.bg||"#6366f1"}18`,borderBottom:`1px solid ${c?.bg||"#6366f1"}40`,
+          padding:"0.6rem 1.2rem",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"
+        }}>
+          <span style={{width:8,height:8,borderRadius:"50%",background:c?.bg||"#6366f1",animation:"pulse 1.5s infinite",flexShrink:0}}/>
+          <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{activeTimer.subject}</span>
+          <span style={{color:"#9ca3af",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{activeTimer.content}</span>
+          <span style={{color:c?.bg||"#6366f1",fontSize:"1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{timerElapsedLabel()}</span>
+          <button onClick={stopTimer} style={{
+            background:"#ef4444",border:"none",borderRadius:8,color:"white",cursor:"pointer",
+            fontSize:"0.78rem",fontWeight:700,padding:"0.35rem 0.9rem",fontFamily:"'Noto Sans KR',sans-serif",flexShrink:0
+          }}>■ 정지</button>
+        </div>
+      );})()}
+
       <main style={{maxWidth:900,margin:"0 auto",padding:"1.4rem 1rem"}}>
 
         {/* 리포트 내보내기 버튼 */}
@@ -2893,7 +2977,8 @@ export default function App() {
         </div>
 
         <div className="fade" key={tab}>
-          {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}/>}
+          {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}
+            activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={stopTimer}/>}
           {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
           {tab==="methods"&&<ELSSystem data={data} setData={setData}/>}
           {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
