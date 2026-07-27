@@ -488,6 +488,11 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
           <span style={{background:statusStyle.bg,color:statusStyle.color,fontSize:"0.7rem",padding:"0.12rem 0.5rem",borderRadius:99,fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>{statusStyle.label}</span>
           {plan.difficulty&&<span style={{color:DIFFICULTY_COLOR[plan.difficulty],fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>난이도 {DIFFICULTY_LABEL[plan.difficulty]}</span>}
           {plan.focusTarget&&<span style={{color:"#6366f1",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>집중 목표 {FOCUS_LABEL[plan.focusTarget]}</span>}
+          {plan.totalMinutes>0&&(
+            <span style={{color:"#f59e0b",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>
+              ⏱ {Math.floor(plan.totalMinutes/60)>0?`${Math.floor(plan.totalMinutes/60)}h `:""}{plan.totalMinutes%60}m
+            </span>
+          )}
         </div>
         <div style={{display:"flex",gap:5,flexShrink:0}}>
           <button onClick={()=>onEdit(plan)} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
@@ -1504,6 +1509,14 @@ function buildReportText(data, period) {
   lines.push(`[계획 수행 현황]`);
   lines.push(`총 계획: ${plans.length}개 | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개`);
   if(plans.length>0) lines.push(`달성률: ${Math.round((planDone/plans.length)*100)}%`);
+  const trackedPlans = plans.filter(p=>p.totalMinutes>0);
+  if(trackedPlans.length>0){
+    const totalTrackedMin = trackedPlans.reduce((a,p)=>a+p.totalMinutes,0);
+    lines.push(`타이머 기록 총합: ${Math.floor(totalTrackedMin/60)}시간 ${totalTrackedMin%60}분 (${trackedPlans.length}개 계획)`);
+    [...trackedPlans].sort((a,b)=>b.totalMinutes-a.totalMinutes).forEach(p=>{
+      lines.push(`- [${p.subject}] ${p.content.slice(0,40)}: ${Math.floor(p.totalMinutes/60)}h ${p.totalMinutes%60}m`);
+    });
+  }
 
   // ELS 실험법 현황
   const exps = data.elsExperiments||[];
@@ -2765,7 +2778,13 @@ export default function App() {
           day[si]=activeTimer.subject;
         }
         tt[dateStr]=day;
-        return {...d, timetable:tt};
+        // 이 계획에 실행 시간 누적 + 실행 이력 기록
+        const plans=(d.plans2||[]).map(p=>{
+          if(p.id!==activeTimer.planId) return p;
+          const sessions=[...(p.sessions||[]), { date:dateStr, minutes:elapsedMin, startedAt:activeTimer.startedAt, endedAt:Date.now() }];
+          return { ...p, totalMinutes:(p.totalMinutes||0)+elapsedMin, sessions };
+        });
+        return {...d, timetable:tt, plans2:plans};
       });
     }
     setActiveTimer(null);
