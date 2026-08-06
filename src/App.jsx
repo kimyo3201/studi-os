@@ -75,6 +75,7 @@ const initialData = {
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
   elsExperiments: [],   // ELS 실험법: { id, subject, sub, track, name, note, score(0~5), order, status }
   elsReviews: [],       // 일요일 리뷰 기록: { id, weekKey, date, goodIds:[], badIds:[] }
+  weeklyTrainings: [],  // 주간 훈련 공부법: { id, weekKey, subject, name, method, dailyChecks:{날짜:true}, score(0~5,평가후), note, evaluated:bool }
 };
 
 // ISO 주차 키 계산 (월요일 시작 기준)
@@ -1549,6 +1550,23 @@ function buildReportText(data, period) {
     lines.push(`- [${r.date}] 👍강화: ${goodNames||"없음"} | 👎하향: ${badNames||"없음"}`);
   });
 
+  // 주간 집중 훈련
+  const trainings = data.weeklyTrainings||[];
+  lines.push("");
+  lines.push(`[주간 집중 훈련 이력] 총 ${trainings.length}개`);
+  if(trainings.length===0) lines.push("- 등록된 훈련 없음");
+  else {
+    const byWeek={};
+    trainings.forEach(t=>{ if(!byWeek[t.weekKey]) byWeek[t.weekKey]=[]; byWeek[t.weekKey].push(t); });
+    Object.entries(byWeek).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([wk,list])=>{
+      lines.push(`${wk}:`);
+      list.forEach(t=>{
+        const checked=Object.values(t.dailyChecks||{}).filter(Boolean).length;
+        lines.push(`  - [${t.subject}] ${t.name}: ${checked}/7일 실행${t.evaluated?` · ★${t.score}${t.note?" · "+t.note:""}`:" · 미평가"}`);
+      });
+    });
+  }
+
   lines.push("");
   lines.push(`=== 리포트 끝 ===`);
 
@@ -2132,6 +2150,235 @@ function ELSSystem({data, setData}) {
 
       {reviewOpen&&(
         <ELSWeeklyReview experiments={experiments} onSave={saveReview} onClose={()=>setReviewOpen(false)}/>
+      )}
+    </div>
+  );
+}
+
+// ── 주간 훈련 3개 (ELS와 별개) — 이번 주만 집중 훈련할 공부법 등록/체크/일요일 평가 ──
+function WeeklyTrainingForm({onSave, onClose, editData, weekKey}) {
+  const [subject,setSubject]=useState(editData?.subject||"수학");
+  const [name,setName]=useState(editData?.name||"");
+  const [method,setMethod]=useState(editData?.method||"");
+  return (
+    <Modal title={editData?"훈련 공부법 수정":"이번 주 훈련 공부법 등록"} onClose={onClose}>
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>과목</div>
+        <select value={subject} onChange={e=>setSubject(e.target.value)} style={inp}>
+          {SUBJECTS.map(s=><option key={s}>{s}</option>)}
+          <option value="전체">전체 (과목 무관)</option>
+        </select>
+      </div>
+      <div style={{marginBottom:"0.9rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>공부법 이름</div>
+        <input value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="예: 백지 인출 복습법"/>
+      </div>
+      <div style={{marginBottom:"1.2rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>구체적 방법</div>
+        <textarea value={method} onChange={e=>setMethod(e.target.value)} rows={4} style={{...inp,resize:"vertical"}} placeholder="이번 주 동안 매일 어떻게 실행할 건지 구체적으로"/>
+      </div>
+      <Btn full onClick={()=>{
+        if(!name.trim())return;
+        onSave({
+          id:editData?.id||Date.now(), weekKey, subject, name, method,
+          dailyChecks: editData?.dailyChecks||{},
+          score: editData?.score||0,
+          note: editData?.note||"",
+          evaluated: editData?.evaluated||false,
+        });
+        onClose();
+      }}>저장</Btn>
+    </Modal>
+  );
+}
+
+function WeeklyTrainingCard({training, onEdit, onDelete, onToggleDay, weekDates}) {
+  const c=SUBJECT_COLORS[training.subject];
+  const DAY_KO=["월","화","수","목","금","토","일"];
+  const checkedCount = weekDates.filter(d=>training.dailyChecks?.[d]).length;
+
+  return (
+    <div style={{background:"#0a0c12",border:`1px solid ${c?.bg||"#6366f1"}30`,borderRadius:12,padding:"1rem 1.1rem",marginBottom:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{training.subject}</span>
+          <span style={{color:"#f1f3f9",fontWeight:700,fontSize:"0.88rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{training.name}</span>
+          {training.evaluated&&training.score>0&&(
+            <span style={{color:"#fbbf24",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace"}}>★{training.score}</span>
+          )}
+        </div>
+        <div style={{display:"flex",gap:6,flexShrink:0}}>
+          <button onClick={()=>onEdit(training)} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
+          <button onClick={()=>onDelete(training.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.82rem"}}>×</button>
+        </div>
+      </div>
+      {training.method&&<div style={{color:"#9ca3af",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,marginBottom:10}}>{training.method}</div>}
+
+      {/* 7일 체크박스 */}
+      <div style={{display:"flex",gap:5,marginBottom:6}}>
+        {weekDates.map((d,i)=>{
+          const checked=!!training.dailyChecks?.[d];
+          const isFuture = new Date(d) > new Date(todayStr());
+          return (
+            <button key={d} onClick={()=>!isFuture&&onToggleDay(training.id,d)} disabled={isFuture} style={{
+              flex:1, padding:"0.4rem 0", borderRadius:7, border:`1px solid ${checked?(c?.bg||"#6366f1"):"#1e2230"}`,
+              background:checked?(c?.bg||"#6366f1")+"25":"#111318",
+              color:isFuture?"#2d3241":checked?(c?.text||"#a5b4fc"):"#6b7280",
+              cursor:isFuture?"default":"pointer", textAlign:"center",
+              fontFamily:"'Noto Sans KR',sans-serif", fontSize:"0.7rem", fontWeight:700
+            }}>
+              <div>{DAY_KO[i]}</div>
+              <div style={{fontSize:"0.85rem",marginTop:2}}>{checked?"✓":""}</div>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace"}}>{checkedCount}/7일 실행</div>
+
+      {training.evaluated&&training.note&&(
+        <div style={{marginTop:8,padding:"0.6rem 0.8rem",background:"#111318",borderRadius:8,color:"#9ca3af",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
+          📝 {training.note}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 일요일 평가 모달 — 등록된 최대 3개 훈련을 각각 별점+메모로 평가
+function WeeklyEvaluateModal({trainings, onSave, onClose}) {
+  const [scores,setScores]=useState(()=>{
+    const init={};
+    trainings.forEach(t=>{ init[t.id]={score:t.score||0, note:t.note||""}; });
+    return init;
+  });
+
+  function setScore(id,score){ setScores(s=>({...s,[id]:{...s[id],score}})); }
+  function setNote(id,note){ setScores(s=>({...s,[id]:{...s[id],note}})); }
+
+  return (
+    <Modal title="🗓️ 일요일 — 주간 훈련 평가" onClose={onClose} wide>
+      <p style={{color:"#6b7280",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"1rem",lineHeight:1.6}}>
+        이번 주 훈련한 공부법 각각을 평가해줘. 다음 주에 계속 쓸지는 별점 보고 네가 판단하면 돼.
+      </p>
+      <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:"1.2rem"}}>
+        {trainings.map(t=>{
+          const c=SUBJECT_COLORS[t.subject];
+          const checkedCount=Object.values(t.dailyChecks||{}).filter(Boolean).length;
+          return (
+            <div key={t.id} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.9rem 1rem"}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{t.subject}</span>
+                <span style={{color:"#f1f3f9",fontWeight:700,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{t.name}</span>
+                <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{checkedCount}/7일 실행</span>
+              </div>
+              <div style={{marginBottom:8}}>
+                <StarRating value={scores[t.id]?.score||0} onChange={s=>setScore(t.id,s)}/>
+              </div>
+              <input value={scores[t.id]?.note||""} onChange={e=>setNote(t.id,e.target.value)} style={inp} placeholder="느낀 점, 다음 주에 계속 쓸지 메모"/>
+            </div>
+          );
+        })}
+        {trainings.length===0&&<div style={{color:"#4b5563",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 훈련 공부법이 없어.</div>}
+      </div>
+      <Btn full onClick={()=>{onSave(scores);onClose();}}>평가 완료 저장</Btn>
+    </Modal>
+  );
+}
+
+function WeeklyTrainingSystem({data, setData}) {
+  const [weekOffset,setWeekOffset]=useState(0);
+  const [modal,setModal]=useState(null); // "add" | "edit" | "evaluate"
+  const [editTraining,setEditTraining]=useState(null);
+
+  const baseDate = addWeeks(todayStr(), weekOffset);
+  const weekKey = getWeekKey(baseDate);
+  const isCurrentWeek = weekOffset===0;
+  const rangeLabel = weekRangeLabel(baseDate);
+
+  // 이번 주(선택된 주)의 월요일부터 일요일까지 날짜 배열
+  const d0 = new Date(baseDate);
+  const day = d0.getDay();
+  const monday = new Date(d0); monday.setDate(d0.getDate()-(day===0?6:day-1));
+  const weekDates = Array.from({length:7},(_,i)=>{ const x=new Date(monday); x.setDate(monday.getDate()+i); return x.toISOString().slice(0,10); });
+  const sunday = weekDates[6];
+  const isSundayOrAfter = todayStr() >= sunday;
+
+  const trainings = (data.weeklyTrainings||[]).filter(t=>t.weekKey===weekKey);
+
+  function saveTraining(t){
+    setData(d=>{
+      const list=[...(d.weeklyTrainings||[])];
+      const idx=list.findIndex(x=>x.id===t.id);
+      if(idx>=0) list[idx]=t; else list.push(t);
+      return {...d, weeklyTrainings:list};
+    });
+  }
+  function deleteTraining(id){
+    setData(d=>({...d, weeklyTrainings:(d.weeklyTrainings||[]).filter(t=>t.id!==id)}));
+  }
+  function toggleDay(id,date){
+    setData(d=>({...d, weeklyTrainings:(d.weeklyTrainings||[]).map(t=>{
+      if(t.id!==id) return t;
+      const checks={...(t.dailyChecks||{})};
+      checks[date] = !checks[date];
+      return {...t, dailyChecks:checks};
+    })}));
+  }
+  function saveEvaluation(scores){
+    setData(d=>({...d, weeklyTrainings:(d.weeklyTrainings||[]).map(t=>{
+      if(!scores[t.id]) return t;
+      return {...t, score:scores[t.id].score, note:scores[t.id].note, evaluated:true};
+    })}));
+  }
+
+  const allEvaluated = trainings.length>0 && trainings.every(t=>t.evaluated);
+
+  return (
+    <div>
+      <div style={{background:"#6366f110",border:"1px solid #6366f130",borderRadius:12,padding:"0.9rem 1.1rem",marginBottom:"1.1rem"}}>
+        <div style={{color:"#818cf8",fontSize:"0.78rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:4}}>주간 집중 훈련</div>
+        <div style={{color:"#9ca3af",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
+          매주 새로운 공부법 최대 3개를 정해서 일주일간 집중 훈련하고, 일요일에 평가해서 누적시킨다.
+        </div>
+      </div>
+
+      {/* 주 네비게이션 */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:14,marginBottom:"1.2rem"}}>
+        <button onClick={()=>setWeekOffset(o=>o-1)} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,color:"#9ca3af",cursor:"pointer",fontSize:"1.1rem",padding:"0.3rem 0.8rem"}}>‹</button>
+        <div style={{textAlign:"center"}}>
+          <div style={{color:"#f1f3f9",fontSize:"0.92rem",fontWeight:900,fontFamily:"'Noto Sans KR',sans-serif"}}>{isCurrentWeek?"이번 주":rangeLabel}</div>
+          {!isCurrentWeek && <div style={{color:"#4b5563",fontSize:"0.65rem",fontFamily:"'JetBrains Mono',monospace"}}>{rangeLabel}</div>}
+          {!isCurrentWeek && <div onClick={()=>setWeekOffset(0)} style={{color:"#6366f1",fontSize:"0.65rem",fontFamily:"'Noto Sans KR',sans-serif",cursor:"pointer",textDecoration:"underline",marginTop:2}}>이번 주로</div>}
+        </div>
+        <button onClick={()=>setWeekOffset(o=>o+1)} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,color:"#9ca3af",cursor:"pointer",fontSize:"1.1rem",padding:"0.3rem 0.8rem"}}>›</button>
+      </div>
+
+      {/* 액션 버튼 */}
+      <div style={{display:"flex",gap:8,marginBottom:"1.1rem",flexWrap:"wrap"}}>
+        <Btn small color="#6366f1" onClick={()=>{setEditTraining(null);setModal("add");}} disabled={trainings.length>=3}>
+          + 훈련 등록 ({trainings.length}/3)
+        </Btn>
+        {isSundayOrAfter && trainings.length>0 && (
+          <Btn small color={allEvaluated?"#22c55e":"#f59e0b"} onClick={()=>setModal("evaluate")}>
+            🗓️ {allEvaluated?"평가 완료 (다시 보기)":"일요일 평가하기"}
+          </Btn>
+        )}
+      </div>
+
+      {trainings.length===0
+        ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>이번 주 훈련 공부법을 등록해줘 (최대 3개)</div>
+        : trainings.map(t=>(
+            <WeeklyTrainingCard key={t.id} training={t} onEdit={t=>{setEditTraining(t);setModal("edit");}} onDelete={deleteTraining} onToggleDay={toggleDay} weekDates={weekDates}/>
+          ))
+      }
+
+      {(modal==="add"||modal==="edit")&&(
+        <WeeklyTrainingForm editData={modal==="edit"?editTraining:null} weekKey={weekKey}
+          onSave={t=>{saveTraining(t);setModal(null);setEditTraining(null);}}
+          onClose={()=>{setModal(null);setEditTraining(null);}}/>
+      )}
+      {modal==="evaluate"&&(
+        <WeeklyEvaluateModal trainings={trainings} onSave={saveEvaluation} onClose={()=>setModal(null)}/>
       )}
     </div>
   );
@@ -2889,6 +3136,7 @@ export default function App() {
   const tabs=[
     {id:"schedule",label:"계획+타임테이블"},
     {id:"goals",label:"목표"},
+    {id:"training",label:"주간 훈련"},
     {id:"methods",label:"ELS 공부법"},
     {id:"calendar",label:"달력"},
     {id:"wrongs",label:`오답 (${data.wrongs.length})`},
@@ -2999,6 +3247,7 @@ export default function App() {
           {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}
             activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={stopTimer}/>}
           {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
+          {tab==="training"&&<WeeklyTrainingSystem data={data} setData={setData}/>}
           {tab==="methods"&&<ELSSystem data={data} setData={setData}/>}
           {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
           {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}
