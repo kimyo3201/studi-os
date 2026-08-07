@@ -853,6 +853,100 @@ function PlanSystem({data,setData}) {
 }
 
 // ── 오답 등록 ──────────────────────────────────────────────────────────────────
+// ── 인앱 카메라 (무음 촬영) ──────────────────────────────────────────────────────
+// 네이티브 카메라 앱을 거치지 않고 브라우저 안에서 직접 영상 스트림을 받아 캡처하므로
+// 기기의 카메라 셔터음이 울리지 않는다 (조용한 공간에서 오답 사진 찍을 때 유용).
+function InAppCamera({ onCapture, onClose }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const [ready,setReady]=useState(false);
+  const [error,setError]=useState("");
+  const [facing,setFacing]=useState("environment"); // environment=후면, user=전면
+
+  useEffect(()=>{
+    let cancelled=false;
+    async function startStream(){
+      setReady(false); setError("");
+      // 기존 스트림 정리
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(t=>t.stop());
+        streamRef.current = null;
+      }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 1280 } },
+          audio: false
+        });
+        if (cancelled) { stream.getTracks().forEach(t=>t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
+        }
+        setReady(true);
+      } catch (err) {
+        setError("카메라를 열 수 없어. 브라우저 카메라 권한을 허용해줘.");
+      }
+    }
+    startStream();
+    return ()=>{
+      cancelled=true;
+      if (streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+    };
+  },[facing]);
+
+  function capture(){
+    const video=videoRef.current;
+    if (!video || !ready) return;
+    const canvas=document.createElement("canvas");
+    canvas.width=video.videoWidth;
+    canvas.height=video.videoHeight;
+    const ctx=canvas.getContext("2d");
+    ctx.drawImage(video,0,0);
+    // 압축(가로 1000px, jpeg 75%)해서 용량 문제 방지
+    const MAX_W=1000;
+    const scale=Math.min(1, MAX_W/canvas.width);
+    let finalCanvas=canvas;
+    if (scale<1) {
+      finalCanvas=document.createElement("canvas");
+      finalCanvas.width=Math.round(canvas.width*scale);
+      finalCanvas.height=Math.round(canvas.height*scale);
+      finalCanvas.getContext("2d").drawImage(canvas,0,0,finalCanvas.width,finalCanvas.height);
+    }
+    const dataUrl=finalCanvas.toDataURL("image/jpeg",0.8);
+    onCapture(dataUrl);
+    if (streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+    onClose();
+  }
+
+  function close(){
+    if (streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop());
+    onClose();
+  }
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"#000",zIndex:999,display:"flex",flexDirection:"column"}}>
+      <div style={{position:"relative",flex:1,overflow:"hidden",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <video ref={videoRef} playsInline muted style={{width:"100%",height:"100%",objectFit:"contain",background:"#000"}}/>
+        {!ready && !error && (
+          <div style={{position:"absolute",color:"#9ca3af",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.85rem"}}>카메라 여는 중...</div>
+        )}
+        {error && (
+          <div style={{position:"absolute",color:"#ef4444",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.85rem",textAlign:"center",padding:"0 2rem"}}>{error}</div>
+        )}
+      </div>
+      <div style={{background:"#0a0c12",padding:"1rem 1.2rem",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <button onClick={close} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.5rem"}}>취소</button>
+        <button onClick={capture} disabled={!ready} style={{
+          width:66,height:66,borderRadius:"50%",background:ready?"white":"#4b5563",
+          border:"4px solid #6366f1",cursor:ready?"pointer":"default"
+        }}/>
+        <button onClick={()=>setFacing(f=>f==="environment"?"user":"environment")} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",padding:"0.5rem"}}>🔄 전환</button>
+      </div>
+    </div>
+  );
+}
+
 function WrongForm({onSave,onClose,editData,onDelete}) {
   const [date,setDate]=useState(editData?.date||todayStr());
   const [subject,setSubject]=useState(editData?.subject||"수학");
@@ -862,6 +956,7 @@ function WrongForm({onSave,onClose,editData,onDelete}) {
   const [fix,setFix]=useState(editData?.fix||"");
   const [photo,setPhoto]=useState(editData?.photo||null);
   const [answerText,setAnswerText]=useState(editData?.answerText||"");
+  const [cameraOpen,setCameraOpen]=useState(false);
 
   function handlePhoto(e, setter) {
     const file=e.target.files[0]; if(!file)return;
@@ -942,20 +1037,32 @@ function WrongForm({onSave,onClose,editData,onDelete}) {
       {/* 사진 */}
       <div style={{marginBottom:"0.9rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>문제 사진 (선택)</div>
-        <label style={{
-          display:"inline-flex",alignItems:"center",gap:6,
-          background:"#111318",border:"1px solid #1e2230",borderRadius:8,
-          padding:"0.55rem 1rem",cursor:"pointer",
-          color:"#9ca3af",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:600
-        }}>
-          📷 {photo?"사진 변경":"사진 선택"}
-          <input type="file" accept="image/*" onChange={e=>handlePhoto(e,setPhoto)} style={{display:"none"}}/>
-        </label>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          <label style={{
+            display:"inline-flex",alignItems:"center",gap:6,
+            background:"#111318",border:"1px solid #1e2230",borderRadius:8,
+            padding:"0.55rem 1rem",cursor:"pointer",
+            color:"#9ca3af",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:600
+          }}>
+            🖼️ 앨범에서 선택
+            <input type="file" accept="image/*" onChange={e=>handlePhoto(e,setPhoto)} style={{display:"none"}}/>
+          </label>
+          <button onClick={()=>setCameraOpen(true)} style={{
+            display:"inline-flex",alignItems:"center",gap:6,
+            background:"#6366f118",border:"1px solid #6366f140",borderRadius:8,
+            padding:"0.55rem 1rem",cursor:"pointer",
+            color:"#818cf8",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:600
+          }}>🔇 무음 카메라</button>
+        </div>
         {photo&&<div style={{marginTop:6,display:"flex",alignItems:"center",gap:8}}>
           <img src={photo} alt="미리보기" style={{height:60,borderRadius:6,border:"1px solid #1e2230",objectFit:"contain"}}/>
           <button onClick={()=>setPhoto(null)} style={{background:"none",border:"none",color:"#ef4444",cursor:"pointer",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif"}}>삭제</button>
         </div>}
       </div>
+
+      {cameraOpen&&(
+        <InAppCamera onCapture={dataUrl=>setPhoto(dataUrl)} onClose={()=>setCameraOpen(false)}/>
+      )}
 
       {/* 정답 */}
       <div style={{marginBottom:"0.9rem"}}>
