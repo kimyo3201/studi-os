@@ -23,6 +23,7 @@ const ELS_TRACKS = [
   { key:"적용", label:"🎯 적용", desc:"문제 해결에 적용해야 하는가", color:"#ef4444" },
   { key:"탐구", label:"🔍 탐구", desc:"깊이 파고들어야 하는가", color:"#3b82f6" },
   { key:"창조", label:"🧪 창조", desc:"직접 만들면 이해가 깊어지는가", color:"#22c55e" },
+  { key:"기타", label:"📌 기타", desc:"5계열에 안 들어가는 짧은 팁·느낀 점", color:"#64748b" },
 ];
 
 const SUBJECT_COLORS = {
@@ -76,6 +77,7 @@ const initialData = {
   elsExperiments: [],   // ELS 실험법: { id, subject, sub, track, name, note, score(0~5), order, status }
   elsReviews: [],       // 일요일 리뷰 기록: { id, weekKey, date, goodIds:[], badIds:[] }
   weeklyTrainings: [],  // 주간 훈련 공부법: { id, weekKey, subject, name, method, dailyChecks:{날짜:true}, score(0~5,평가후), note, evaluated:bool }
+  nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
 };
 
 // ISO 주차 키 계산 (월요일 시작 기준)
@@ -152,6 +154,13 @@ async function cloudSave(d) {
 }
 
 function todayStr() { return new Date().toISOString().slice(0,10); }
+// 학습일 기준 날짜: 새벽 6시 이전이면 "어제"로 취급 (하루 공부 흐름을 06:00~다음날 06:00로 봄)
+function studyDayStr() {
+  const now = new Date();
+  const shifted = new Date(now);
+  if (now.getHours() < START_HOUR) shifted.setDate(now.getDate()-1);
+  return `${shifted.getFullYear()}-${String(shifted.getMonth()+1).padStart(2,"0")}-${String(shifted.getDate()).padStart(2,"0")}`;
+}
 function slotToTime(slot) {
   const totalMin = slot*10 + START_HOUR*60;
   const h = Math.floor(totalMin/60)%24;
@@ -397,14 +406,6 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
   const [date,setDate]=useState(editData?.date||defaultDate||todayStr());
   const [subject,setSubject]=useState(editData?.subject||"수학");
   const [content,setContent]=useState(editData?.content||"");
-  const [difficulty,setDifficulty]=useState(editData?.difficulty||3);
-  const [focusTarget,setFocusTarget]=useState(editData?.focusTarget||3);
-  const [note,setNote]=useState(editData?.note||"");
-  const [elsTracks,setElsTracks]=useState(editData?.elsTracks||[]);
-
-  function toggleTrack(key){
-    setElsTracks(t=>t.includes(key)?t.filter(x=>x!==key):[...t,key]);
-  }
 
   return (
     <Modal title={editData?"계획 수정":"계획 추가"} onClose={onClose}>
@@ -421,52 +422,92 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
           </select>
         </div>
       </div>
-      <div style={{marginBottom:"0.9rem"}}>
+      <div style={{marginBottom:"1.2rem"}}>
         <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>할 내용</div>
         <textarea value={content} onChange={e=>setContent(e.target.value)} rows={3}
           style={{...inp,resize:"vertical"}} placeholder="예: 수학의 정석 미적분 p.120~150 풀기"/>
       </div>
-
-      {/* ELS 계열 선택 (1~5개) */}
-      <div style={{marginBottom:"0.9rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>이 계획에 쓸 ELS 계열 (선택)</div>
-        <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
-          {ELS_TRACKS.map(track=>{
-            const on=elsTracks.includes(track.key);
-            return (
-              <button key={track.key} onClick={()=>toggleTrack(track.key)} style={{
-                padding:"0.3rem 0.7rem",borderRadius:8,cursor:"pointer",
-                border:`1.5px solid ${on?track.color:track.color+"35"}`,
-                background:on?track.color+"22":"transparent",
-                color:on?track.color:track.color+"90",
-                fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700
-              }}>{track.label}</button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:"0.9rem"}}>
-        <div>
-          <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>난이도 — <span style={{color:DIFFICULTY_COLOR[difficulty]}}>{DIFFICULTY_LABEL[difficulty]}</span></div>
-          <input type="range" min={1} max={5} value={difficulty} onChange={e=>setDifficulty(Number(e.target.value))}
-            style={{width:"100%",accentColor:DIFFICULTY_COLOR[difficulty]}}/>
-        </div>
-        <div>
-          <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>목표 집중도 — <span style={{color:"#6366f1"}}>{FOCUS_LABEL[focusTarget]}</span></div>
-          <input type="range" min={1} max={5} value={focusTarget} onChange={e=>setFocusTarget(Number(e.target.value))}
-            style={{width:"100%",accentColor:"#6366f1"}}/>
-        </div>
-      </div>
-      <div style={{marginBottom:"1.2rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>메모 (선택)</div>
-        <input value={note} onChange={e=>setNote(e.target.value)} style={inp} placeholder="참고사항, 목표 범위 등"/>
-      </div>
+      <p style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"1rem",lineHeight:1.6}}>
+        난이도, 집중도, ELS 사용 여부는 완료할 때 입력해.
+      </p>
       <Btn full onClick={()=>{
         if(!content.trim())return;
-        onSave({id:editData?.id||Date.now(),date,subject,content,difficulty,focusTarget,note,elsTracks,status:"todo"});
+        onSave({id:editData?.id||Date.now(),date,subject,content,status:"todo"});
         onClose();
       }}>저장</Btn>
+    </Modal>
+  );
+}
+
+// ── 계획 완료 체크 모달 (완료 누르면 반드시 거쳐야 함) ─────────────────────────────
+function CompletionCheckModal({plan, onConfirm, onClose}) {
+  const [usedEls,setUsedEls]=useState(plan.elsTracks&&plan.elsTracks.length>0);
+  const [actualDifficulty,setActualDifficulty]=useState(plan.difficulty||3);
+  const [performance,setPerformance]=useState(3); // 1~5 성과
+  const [focusActual,setFocusActual]=useState(plan.focusTarget||3);
+  const [memo,setMemo]=useState("");
+  const [attempted,setAttempted]=useState(false);
+
+  const canSubmit = memo.trim().length>0;
+
+  return (
+    <Modal title="✅ 계획 완료 체크" onClose={onClose}>
+      <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:9,padding:"0.7rem 0.9rem",marginBottom:"1.1rem"}}>
+        <div style={{color:SUBJECT_COLORS[plan.subject]?.text||"#a5b4fc",fontSize:"0.78rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:3}}>{plan.subject}</div>
+        <div style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{plan.content}</div>
+      </div>
+
+      {/* ELS 사용 여부 */}
+      <div style={{marginBottom:"1rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>ELS 계열을 실제로 사용했나?</div>
+        <div style={{display:"flex",gap:6}}>
+          <button onClick={()=>setUsedEls(true)} style={{flex:1,padding:"0.5rem",borderRadius:8,border:`1px solid ${usedEls?"#22c55e":"#2a2d3a"}`,background:usedEls?"#22c55e18":"#111318",color:usedEls?"#22c55e":"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:700,cursor:"pointer"}}>✅ 사용함</button>
+          <button onClick={()=>setUsedEls(false)} style={{flex:1,padding:"0.5rem",borderRadius:8,border:`1px solid ${!usedEls?"#ef4444":"#2a2d3a"}`,background:!usedEls?"#ef444418":"#111318",color:!usedEls?"#ef4444":"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:700,cursor:"pointer"}}>❌ 안함</button>
+        </div>
+        {!usedEls&&(
+          <div style={{color:"#f59e0b",fontSize:"0.72rem",marginTop:6,fontFamily:"'Noto Sans KR',sans-serif"}}>⚠️ ELS 없이 그냥 풀었어. 다음엔 계열을 정하고 시작해봐.</div>
+        )}
+        {plan.elsTracks&&plan.elsTracks.length>0&&(
+          <div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:6}}>
+            {plan.elsTracks.map(tk=>{
+              const track=ELS_TRACKS.find(t=>t.key===tk);
+              if(!track)return null;
+              return <span key={tk} style={{background:track.color+"18",color:track.color,fontSize:"0.65rem",padding:"0.1rem 0.45rem",borderRadius:99,fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>계획에 등록된 계열: {track.label}</span>;
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* 실제 난이도 */}
+      <div style={{marginBottom:"1rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>실제로 느낀 난이도 — <span style={{color:DIFFICULTY_COLOR[actualDifficulty]}}>{DIFFICULTY_LABEL[actualDifficulty]}</span></div>
+        <input type="range" min={1} max={5} value={actualDifficulty} onChange={e=>setActualDifficulty(Number(e.target.value))} style={{width:"100%",accentColor:DIFFICULTY_COLOR[actualDifficulty]}}/>
+      </div>
+
+      {/* 성과 */}
+      <div style={{marginBottom:"1rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>성과 — <span style={{color:"#22c55e"}}>{["","매우 부족","부족","보통","좋음","매우 좋음"][performance]}</span></div>
+        <input type="range" min={1} max={5} value={performance} onChange={e=>setPerformance(Number(e.target.value))} style={{width:"100%",accentColor:"#22c55e"}}/>
+      </div>
+
+      {/* 실제 집중력 */}
+      <div style={{marginBottom:"1.1rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>실제 집중력 — <span style={{color:"#6366f1"}}>{FOCUS_LABEL[focusActual]}</span></div>
+        <input type="range" min={1} max={5} value={focusActual} onChange={e=>setFocusActual(Number(e.target.value))} style={{width:"100%",accentColor:"#6366f1"}}/>
+      </div>
+
+      {/* 한줄 메모 (필수) */}
+      <div style={{marginBottom:"1.2rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>한줄 메모 <span style={{color:"#ef4444"}}>(필수)</span></div>
+        <input value={memo} onChange={e=>{setMemo(e.target.value);setAttempted(false);}} style={{...inp, border:`1px solid ${!canSubmit&&attempted?"#ef4444":"#1e2230"}`}} placeholder="오늘 이 계획에서 느낀 점 한 줄"/>
+        {!canSubmit&&attempted&&<div style={{color:"#ef4444",fontSize:"0.7rem",marginTop:4,fontFamily:"'Noto Sans KR',sans-serif"}}>메모는 반드시 적어야 완료 처리돼</div>}
+      </div>
+
+      <Btn full color="#22c55e" onClick={()=>{
+        if(!canSubmit){ setAttempted(true); return; }
+        onConfirm({ usedEls, actualDifficulty, performance, focusActual, memo:memo.trim() });
+        onClose();
+      }}>완료 처리</Btn>
     </Modal>
   );
 }
@@ -479,6 +520,7 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
     failed:{bg:"#ef444420", color:"#ef4444", label:"❌ 실패"},
   }[plan.status]||{bg:"#1e2230",color:"#6b7280",label:"예정"};
   const isRunning = activeTimer && activeTimer.planId===plan.id;
+  const [checkOpen,setCheckOpen]=useState(false);
 
   return (
     <div style={{background:"#0a0c12",border:`1px solid ${isRunning?(c?.bg||"#6366f1"):plan.status==="done"?"#22c55e30":plan.status==="failed"?"#ef444430":"#1e2230"}`,
@@ -512,6 +554,19 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
       )}
       {plan.note&&<div style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>📌 {plan.note}</div>}
 
+      {/* 완료 체크 결과 표시 */}
+      {plan.status==="done"&&plan.completionCheck&&(
+        <div style={{background:"#111318",border:"1px solid #1e2230",borderRadius:8,padding:"0.6rem 0.8rem",marginBottom:8}}>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:plan.completionCheck.memo?5:0,fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
+            <span style={{color:plan.completionCheck.usedEls?"#22c55e":"#ef4444"}}>{plan.completionCheck.usedEls?"✅ ELS 사용":"❌ ELS 미사용"}</span>
+            <span style={{color:"#9ca3af"}}>난이도 {DIFFICULTY_LABEL[plan.completionCheck.actualDifficulty]}</span>
+            <span style={{color:"#9ca3af"}}>성과 {plan.completionCheck.performance}/5</span>
+            <span style={{color:"#9ca3af"}}>집중 {plan.completionCheck.focusActual}/5</span>
+          </div>
+          {plan.completionCheck.memo&&<div style={{color:"#6b7280",fontSize:"0.75rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.5}}>💬 {plan.completionCheck.memo}</div>}
+        </div>
+      )}
+
       {/* 타이머 버튼 */}
       {plan.status==="todo"&&onStartTimer&&(
         <div style={{marginBottom:6}}>
@@ -533,12 +588,18 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
       {/* 상태 버튼 */}
       {plan.status==="todo"&&(
         <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>onStatus(plan.id,"done")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button>
+          <button onClick={()=>setCheckOpen(true)} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button>
           <button onClick={()=>onStatus(plan.id,"failed")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button>
         </div>
       )}
       {plan.status==="failed"&&(
         <div style={{color:"#ef4444",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>→ {nextDay(plan.date)}로 이동됨</div>
+      )}
+
+      {checkOpen&&(
+        <CompletionCheckModal plan={plan}
+          onConfirm={checkResult=>onStatus(plan.id,"done",checkResult)}
+          onClose={()=>setCheckOpen(false)}/>
       )}
     </div>
   );
@@ -642,12 +703,13 @@ function PlanSystem({data,setData}) {
     setData(d=>({...d,plans2:(d.plans2||[]).filter(p=>p.id!==id)}));
   }
 
-  function setStatus(id, status) {
+  function setStatus(id, status, completionCheck) {
     setData(d=>{
       const list=[...(d.plans2||[])];
       const idx=list.findIndex(x=>x.id===id);
       if(idx<0)return d;
       const plan={...list[idx],status};
+      if(completionCheck) plan.completionCheck=completionCheck;
       list[idx]=plan;
       // 실패시 다음날로 복사
       if(status==="failed"){
@@ -948,7 +1010,7 @@ function InAppCamera({ onCapture, onClose }) {
 }
 
 function WrongForm({onSave,onClose,editData,onDelete}) {
-  const [date,setDate]=useState(editData?.date||todayStr());
+  const [date,setDate]=useState(editData?.date||studyDayStr());
   const [subject,setSubject]=useState(editData?.subject||"수학");
   const [code,setCode]=useState(editData?.code||"XC");
   const [problem,setProblem]=useState(editData?.problem||"");
@@ -1626,6 +1688,23 @@ function buildReportText(data, period) {
     });
   }
 
+  // 완료 체크 데이터 — ELS 사용률, 평균 난이도/성과/집중도
+  const checkedPlans = plans.filter(p=>p.status==="done" && p.completionCheck);
+  if(checkedPlans.length>0){
+    const elsUsedCount = checkedPlans.filter(p=>p.completionCheck.usedEls).length;
+    const avgDiff = (checkedPlans.reduce((a,p)=>a+p.completionCheck.actualDifficulty,0)/checkedPlans.length).toFixed(1);
+    const avgPerf = (checkedPlans.reduce((a,p)=>a+p.completionCheck.performance,0)/checkedPlans.length).toFixed(1);
+    const avgFocus = (checkedPlans.reduce((a,p)=>a+p.completionCheck.focusActual,0)/checkedPlans.length).toFixed(1);
+    lines.push("");
+    lines.push(`[완료 체크 통계] 완료 시 체크된 계획 ${checkedPlans.length}개`);
+    lines.push(`ELS 사용률: ${elsUsedCount}/${checkedPlans.length}개 (${Math.round((elsUsedCount/checkedPlans.length)*100)}%)`);
+    lines.push(`평균 체감 난이도: ${avgDiff}/5 | 평균 성과: ${avgPerf}/5 | 평균 집중도: ${avgFocus}/5`);
+    lines.push(`완료 메모:`);
+    checkedPlans.slice(-10).forEach(p=>{
+      lines.push(`- [${p.date}|${p.subject}] ${p.completionCheck.usedEls?"ELS✅":"ELS❌"} 난이도${p.completionCheck.actualDifficulty} 성과${p.completionCheck.performance} 집중${p.completionCheck.focusActual}: "${p.completionCheck.memo}"`);
+    });
+  }
+
   // ELS 실험법 현황
   const exps = data.elsExperiments||[];
   const elsReviewsInPeriod = (data.elsReviews||[]).filter(r=>new Date(r.date)>=cutoff);
@@ -1673,6 +1752,59 @@ function buildReportText(data, period) {
       });
     });
   }
+
+  // 주간/월간 목표 (목표 탭)
+  const goalItems = (data.goalItems||[]).filter(g=>{
+    // scopeKey가 주(YYYY-Www) 또는 월(YYYY-MM) 문자열이라 날짜 파싱 후 cutoff 비교
+    const approxDate = g.scope==="month" ? `${g.scopeKey}-01` : g.scopeKey.split("-W")[0]+"-01-01";
+    return new Date(approxDate) >= new Date(cutoff.getFullYear(), cutoff.getMonth()-2, 1); // 목표는 넉넉하게 최근 것 포함
+  });
+  const weekGoalItems = goalItems.filter(g=>g.scope==="week");
+  const monthGoalItems = goalItems.filter(g=>g.scope==="month");
+  lines.push("");
+  lines.push(`[월간 목표] 총 ${monthGoalItems.length}개`);
+  if(monthGoalItems.length===0) lines.push("- 없음");
+  else {
+    const byMonth={};
+    monthGoalItems.forEach(g=>{ if(!byMonth[g.scopeKey]) byMonth[g.scopeKey]=[]; byMonth[g.scopeKey].push(g); });
+    Object.entries(byMonth).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([mk,list])=>{
+      lines.push(`${mk}:`);
+      list.forEach(g=>{
+        lines.push(`  - [${g.subject}] ${g.content}${g.status==="done"?" ✅완료":""}${g.note?" · "+g.note:""}`);
+      });
+    });
+  }
+  lines.push("");
+  lines.push(`[주간 목표] 총 ${weekGoalItems.length}개`);
+  if(weekGoalItems.length===0) lines.push("- 없음");
+  else {
+    const byWeekG={};
+    weekGoalItems.forEach(g=>{ if(!byWeekG[g.scopeKey]) byWeekG[g.scopeKey]=[]; byWeekG[g.scopeKey].push(g); });
+    Object.entries(byWeekG).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([wk,list])=>{
+      lines.push(`${wk}:`);
+      list.forEach(g=>{
+        lines.push(`  - [${g.subject}] ${g.content}${g.status==="done"?" ✅완료":""}${g.note?" · "+g.note:""}`);
+      });
+    });
+  }
+
+  // 날짜별 계획 메모 (타임테이블 옆 자유 메모)
+  const dailyMemos = Object.entries(data.plans||{}).filter(([d])=>new Date(d)>=cutoff && new Date(d)<=now);
+  lines.push("");
+  lines.push(`[날짜별 계획 메모] ${dailyMemos.length}일`);
+  if(dailyMemos.length===0) lines.push("- 없음");
+  else dailyMemos.sort((a,b)=>a[0].localeCompare(b[0])).forEach(([d,memo])=>{
+    if(memo && memo.trim()) lines.push(`- [${d}] ${memo}`);
+  });
+
+  // 밤 마무리 한줄
+  const nightNotes = Object.entries(data.nightNotes||{}).filter(([d])=>new Date(d)>=cutoff && new Date(d)<=now);
+  lines.push("");
+  lines.push(`[밤 마무리 한줄] ${nightNotes.length}일`);
+  if(nightNotes.length===0) lines.push("- 없음");
+  else nightNotes.sort((a,b)=>a[0].localeCompare(b[0])).forEach(([d,note])=>{
+    if(note && note.trim()) lines.push(`- [${d}] ${note}`);
+  });
 
   lines.push("");
   lines.push(`=== 리포트 끝 ===`);
@@ -2491,9 +2623,63 @@ function WeeklyTrainingSystem({data, setData}) {
   );
 }
 
+// ── 밤 마무리 한줄 (매일 밤 쓰는 전용 메모, 취소/수정 가능) ────────────────────────
+function NightNoteCard({date, note, onSave, onDelete}) {
+  const [editing,setEditing]=useState(false);
+  const [text,setText]=useState(note||"");
+
+  useEffect(()=>{ setText(note||""); },[note]);
+
+  function commit(){
+    const trimmed=text.trim();
+    if(!trimmed){ setEditing(false); return; }
+    onSave(trimmed);
+    setEditing(false);
+  }
+  function cancel(){
+    setText(note||"");
+    setEditing(false);
+  }
+
+  const hasNote = !!(note&&note.trim());
+
+  return (
+    <div style={{
+      background:"#f59e0b0c", border:"1px solid #f59e0b30", borderRadius:11,
+      padding:"0.8rem 1rem", marginTop:12
+    }}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom: (editing||hasNote) ? 7 : 0}}>
+        <span style={{color:"#f59e0b",fontSize:"0.75rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif"}}>🌙 오늘 밤 마무리 한줄</span>
+        {!editing && (
+          <button onClick={()=>setEditing(true)} style={{background:"none",border:"none",color:"#f59e0b",cursor:"pointer",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginLeft:"auto"}}>
+            {hasNote?"수정":"+ 쓰기"}
+          </button>
+        )}
+        {hasNote && !editing && (
+          <button onClick={onDelete} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>삭제</button>
+        )}
+      </div>
+
+      {editing ? (
+        <div>
+          <input autoFocus value={text} onChange={e=>setText(e.target.value)}
+            onKeyDown={e=>{ if(e.key==="Enter") commit(); if(e.key==="Escape") cancel(); }}
+            style={{...inp, marginBottom:8}} placeholder="오늘 하루 한 줄로 정리하면?"/>
+          <div style={{display:"flex",gap:6}}>
+            <button onClick={commit} style={{flex:1,padding:"0.4rem",borderRadius:7,border:"none",background:"#f59e0b",color:"white",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>저장</button>
+            <button onClick={cancel} style={{flex:1,padding:"0.4rem",borderRadius:7,border:"1px solid #2a2d3a",background:"transparent",color:"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",cursor:"pointer"}}>취소</button>
+          </div>
+        </div>
+      ) : hasNote ? (
+        <div onClick={()=>setEditing(true)} style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",cursor:"pointer",lineHeight:1.6}}>{note}</div>
+      ) : null}
+    </div>
+  );
+}
+
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
 function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTimer}) {
-  const [date,setDate]=useState(initDate||todayStr());
+  const [date,setDate]=useState(initDate||studyDayStr());
   const [paintSubject,setPaintSubject]=useState("수학");
   const [erasing,setErasing]=useState(false);
   const [dragging,setDragging]=useState(false);
@@ -2525,11 +2711,13 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
       return {...d,plans2:list};});
   }
   function deletePlan(id){setData(d=>({...d,plans2:(d.plans2||[]).filter(p=>p.id!==id)}));}
-  function setStatus(id,status){
+  function setStatus(id,status,completionCheck){
     setData(d=>{
       const list=[...(d.plans2||[])];
       const idx=list.findIndex(x=>x.id===id);if(idx<0)return d;
-      const plan={...list[idx],status};list[idx]=plan;
+      const plan={...list[idx],status};
+      if(completionCheck) plan.completionCheck=completionCheck;
+      list[idx]=plan;
       if(status==="failed"){
         const tom=nextDay(plan.date);
         if(!list.some(p=>p.id===plan.id+"_m_"+tom))
@@ -2643,6 +2831,9 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
                     onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}
                     activeTimer={activeTimer} onStartTimer={onStartTimer} onStopTimer={onStopTimer}/>)
               }
+              <NightNoteCard date={date} note={(data.nightNotes||{})[date]}
+                onSave={text=>setData(d=>({...d, nightNotes:{...(d.nightNotes||{}), [date]:text}}))}
+                onDelete={()=>setData(d=>{ const nn={...(d.nightNotes||{})}; delete nn[date]; return {...d, nightNotes:nn}; })}/>
             </>
           )}
 
@@ -3094,7 +3285,7 @@ export default function App() {
   const [tab,setTab]=useState("schedule");
   const [modal,setModal]=useState(null);
   const [editWrong,setEditWrong]=useState(null);
-  const [scheduleDate,setScheduleDate]=useState(todayStr());
+  const [scheduleDate,setScheduleDate]=useState(studyDayStr());
   const [practiceQueue,setPracticeQueue]=useState(null); // array of wrong entries with photo
   const [syncStatus,setSyncStatus]=useState("idle"); // idle | syncing | synced | error
   const cloudTimerRef = useRef(null);
@@ -3119,7 +3310,10 @@ export default function App() {
     if(elapsedMin>=1){
       // 타이머 시작 시각부터 elapsedMin 분만큼 10분 슬롯을 자동으로 채움
       const startDate = new Date(activeTimer.startedAt);
-      const dateStr = `${startDate.getFullYear()}-${String(startDate.getMonth()+1).padStart(2,"0")}-${String(startDate.getDate()).padStart(2,"0")}`;
+      // 학습일 기준: 새벽 6시 이전 시작이면 전날 학습으로 귀속
+      const studyDate = new Date(startDate);
+      if (startDate.getHours() < START_HOUR) studyDate.setDate(startDate.getDate()-1);
+      const dateStr = `${studyDate.getFullYear()}-${String(studyDate.getMonth()+1).padStart(2,"0")}-${String(studyDate.getDate()).padStart(2,"0")}`;
       const startTotalMin = startDate.getHours()*60+startDate.getMinutes();
       const startOffsetFromWindow = ((startTotalMin - START_HOUR*60)+1440)%1440; // 06:00 기준 오프셋(분)
       const startSlot = Math.floor(startOffsetFromWindow/10);
