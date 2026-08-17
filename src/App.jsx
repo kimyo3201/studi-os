@@ -2,29 +2,6 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학","기타"];
-const ELS_SUBJECTS = ["전과목 공통","수학","국어","영어","과학","사회","한국사"];
-// 과목별 세분화 항목. 빈 배열이면 세분화 없이 과목 자체가 하나의 단위(전과목 공통, 한국사).
-const ELS_SUBCATEGORIES = {
-  "전과목 공통": [],
-  국어: ["내신","모의고사-문학","모의고사-문법","모의고사-비문학"],
-  수학: ["내신","모의고사"],
-  영어: ["독해","문법","단어암기"],
-  과학: ["물리","생명","지구","화학"],
-  사회: ["지리","윤리","일반","법"],
-  한국사: ["정치사","제도사","문화사","경제사"],
-};
-function elsSubKey(subject){
-  const subs = ELS_SUBCATEGORIES[subject]||[];
-  return subs.length>0 ? subs[0] : "전체";
-}
-const ELS_TRACKS = [
-  { key:"이해", label:"💡 이해", desc:"원리를 이해해야 하는가", color:"#f59e0b" },
-  { key:"암기", label:"🧠 암기", desc:"즉시 인출해야 하는가", color:"#a855f7" },
-  { key:"적용", label:"🎯 적용", desc:"문제 해결에 적용해야 하는가", color:"#ef4444" },
-  { key:"탐구", label:"🔍 탐구", desc:"깊이 파고들어야 하는가", color:"#3b82f6" },
-  { key:"창조", label:"🧪 창조", desc:"직접 만들면 이해가 깊어지는가", color:"#22c55e" },
-  { key:"기타", label:"📌 기타", desc:"5계열에 안 들어가는 짧은 팁·느낀 점", color:"#64748b" },
-];
 
 const SUBJECT_COLORS = {
   "전과목 공통": { bg:"#818cf8", light:"#818cf830", text:"#c7d2fe" }, // 인디고
@@ -74,8 +51,8 @@ const initialData = {
   weekGoals: {},       // { "2024-W03": "이번 주 목표 텍스트" } -- 구버전, 마이그레이션용
   monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
-  elsExperiments: [],   // ELS 실험법: { id, subject, sub, track, name, note, score(0~5), order, status }
-  elsReviews: [],       // 일요일 리뷰 기록: { id, weekKey, date, goodIds:[], badIds:[] }
+  memoFolders: [],       // 메모 폴더: { id, subject, name }
+  subjectMemos: [],      // 과목별 메모: { id, subject, folderId, text, date, starred:bool }
   weeklyTrainings: [],  // 주간 훈련 공부법: { id, weekKey, subject, name, method, dailyChecks:{날짜:true}, score(0~5,평가후), note, evaluated:bool }
   nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
 };
@@ -441,7 +418,6 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
 
 // ── 계획 완료 체크 모달 (완료 누르면 반드시 거쳐야 함) ─────────────────────────────
 function CompletionCheckModal({plan, onConfirm, onClose}) {
-  const [usedEls,setUsedEls]=useState(plan.elsTracks&&plan.elsTracks.length>0);
   const [actualDifficulty,setActualDifficulty]=useState(plan.difficulty||3);
   const [performance,setPerformance]=useState(3); // 1~5 성과
   const [focusActual,setFocusActual]=useState(plan.focusTarget||3);
@@ -455,27 +431,6 @@ function CompletionCheckModal({plan, onConfirm, onClose}) {
       <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:9,padding:"0.7rem 0.9rem",marginBottom:"1.1rem"}}>
         <div style={{color:SUBJECT_COLORS[plan.subject]?.text||"#a5b4fc",fontSize:"0.78rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:3}}>{plan.subject}</div>
         <div style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{plan.content}</div>
-      </div>
-
-      {/* ELS 사용 여부 */}
-      <div style={{marginBottom:"1rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:6,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>ELS 계열을 실제로 사용했나?</div>
-        <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>setUsedEls(true)} style={{flex:1,padding:"0.5rem",borderRadius:8,border:`1px solid ${usedEls?"#22c55e":"#2a2d3a"}`,background:usedEls?"#22c55e18":"#111318",color:usedEls?"#22c55e":"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:700,cursor:"pointer"}}>✅ 사용함</button>
-          <button onClick={()=>setUsedEls(false)} style={{flex:1,padding:"0.5rem",borderRadius:8,border:`1px solid ${!usedEls?"#ef4444":"#2a2d3a"}`,background:!usedEls?"#ef444418":"#111318",color:!usedEls?"#ef4444":"#6b7280",fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:700,cursor:"pointer"}}>❌ 안함</button>
-        </div>
-        {!usedEls&&(
-          <div style={{color:"#f59e0b",fontSize:"0.72rem",marginTop:6,fontFamily:"'Noto Sans KR',sans-serif"}}>⚠️ ELS 없이 그냥 풀었어. 다음엔 계열을 정하고 시작해봐.</div>
-        )}
-        {plan.elsTracks&&plan.elsTracks.length>0&&(
-          <div style={{display:"flex",gap:4,flexWrap:"wrap",marginTop:6}}>
-            {plan.elsTracks.map(tk=>{
-              const track=ELS_TRACKS.find(t=>t.key===tk);
-              if(!track)return null;
-              return <span key={tk} style={{background:track.color+"18",color:track.color,fontSize:"0.65rem",padding:"0.1rem 0.45rem",borderRadius:99,fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>계획에 등록된 계열: {track.label}</span>;
-            })}
-          </div>
-        )}
       </div>
 
       {/* 실제 난이도 */}
@@ -505,7 +460,7 @@ function CompletionCheckModal({plan, onConfirm, onClose}) {
 
       <Btn full color="#22c55e" onClick={()=>{
         if(!canSubmit){ setAttempted(true); return; }
-        onConfirm({ usedEls, actualDifficulty, performance, focusActual, memo:memo.trim() });
+        onConfirm({ actualDifficulty, performance, focusActual, memo:memo.trim() });
         onClose();
       }}>완료 처리</Btn>
     </Modal>
@@ -542,23 +497,13 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
           <button onClick={()=>onDelete(plan.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.82rem"}}>×</button>
         </div>
       </div>
-      <div style={{color:plan.status==="done"?"#4b5563":"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,marginBottom:6,textDecoration:plan.status==="done"?"line-through":"none"}}>{plan.content}</div>
-      {plan.elsTracks&&plan.elsTracks.length>0&&(
-        <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:plan.note?6:8}}>
-          {plan.elsTracks.map(tk=>{
-            const track=ELS_TRACKS.find(t=>t.key===tk);
-            if(!track)return null;
-            return <span key={tk} style={{background:track.color+"18",color:track.color,fontSize:"0.65rem",padding:"0.1rem 0.45rem",borderRadius:99,fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>{track.label}</span>;
-          })}
-        </div>
-      )}
+      <div style={{color:plan.status==="done"?"#4b5563":"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,marginBottom:plan.note?6:8,textDecoration:plan.status==="done"?"line-through":"none"}}>{plan.content}</div>
       {plan.note&&<div style={{color:"#4b5563",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:8}}>📌 {plan.note}</div>}
 
       {/* 완료 체크 결과 표시 */}
       {plan.status==="done"&&plan.completionCheck&&(
         <div style={{background:"#111318",border:"1px solid #1e2230",borderRadius:8,padding:"0.6rem 0.8rem",marginBottom:8}}>
           <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:plan.completionCheck.memo?5:0,fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
-            <span style={{color:plan.completionCheck.usedEls?"#22c55e":"#ef4444"}}>{plan.completionCheck.usedEls?"✅ ELS 사용":"❌ ELS 미사용"}</span>
             <span style={{color:"#9ca3af"}}>난이도 {DIFFICULTY_LABEL[plan.completionCheck.actualDifficulty]}</span>
             <span style={{color:"#9ca3af"}}>성과 {plan.completionCheck.performance}/5</span>
             <span style={{color:"#9ca3af"}}>집중 {plan.completionCheck.focusActual}/5</span>
@@ -1688,53 +1633,43 @@ function buildReportText(data, period) {
     });
   }
 
-  // 완료 체크 데이터 — ELS 사용률, 평균 난이도/성과/집중도
+  // 완료 체크 데이터 — 평균 난이도/성과/집중도
   const checkedPlans = plans.filter(p=>p.status==="done" && p.completionCheck);
   if(checkedPlans.length>0){
-    const elsUsedCount = checkedPlans.filter(p=>p.completionCheck.usedEls).length;
     const avgDiff = (checkedPlans.reduce((a,p)=>a+p.completionCheck.actualDifficulty,0)/checkedPlans.length).toFixed(1);
     const avgPerf = (checkedPlans.reduce((a,p)=>a+p.completionCheck.performance,0)/checkedPlans.length).toFixed(1);
     const avgFocus = (checkedPlans.reduce((a,p)=>a+p.completionCheck.focusActual,0)/checkedPlans.length).toFixed(1);
     lines.push("");
     lines.push(`[완료 체크 통계] 완료 시 체크된 계획 ${checkedPlans.length}개`);
-    lines.push(`ELS 사용률: ${elsUsedCount}/${checkedPlans.length}개 (${Math.round((elsUsedCount/checkedPlans.length)*100)}%)`);
     lines.push(`평균 체감 난이도: ${avgDiff}/5 | 평균 성과: ${avgPerf}/5 | 평균 집중도: ${avgFocus}/5`);
     lines.push(`완료 메모:`);
     checkedPlans.slice(-10).forEach(p=>{
-      lines.push(`- [${p.date}|${p.subject}] ${p.completionCheck.usedEls?"ELS✅":"ELS❌"} 난이도${p.completionCheck.actualDifficulty} 성과${p.completionCheck.performance} 집중${p.completionCheck.focusActual}: "${p.completionCheck.memo}"`);
+      lines.push(`- [${p.date}|${p.subject}] 난이도${p.completionCheck.actualDifficulty} 성과${p.completionCheck.performance} 집중${p.completionCheck.focusActual}: "${p.completionCheck.memo}"`);
     });
   }
 
-  // ELS 실험법 현황
-  const exps = data.elsExperiments||[];
-  const elsReviewsInPeriod = (data.elsReviews||[]).filter(r=>new Date(r.date)>=cutoff);
+  // 과목별 메모 (폴더 구조, ⭐ 즐겨찾기 포함)
+  const memos = (data.subjectMemos||[]).filter(m=>new Date(m.date)>=cutoff && new Date(m.date)<=now);
+  const folders = data.memoFolders||[];
   lines.push("");
-  lines.push(`[ELS 실험법 현황] 등록 ${exps.filter(e=>e.status!=="removed").length}개 · 제거됨 ${exps.filter(e=>e.status==="removed").length}개`);
-  if(exps.length===0) lines.push("- 등록된 실험법 없음");
+  lines.push(`[과목별 메모] ${memos.length}개 (⭐즐겨찾기 ${memos.filter(m=>m.starred).length}개)`);
+  if(memos.length===0) lines.push("- 등록된 메모 없음");
   else {
-    for(const subj of ELS_SUBJECTS){
-      const subs = ELS_SUBCATEGORIES[subj]||[];
-      const subKeys = subs.length>0 ? subs : ["전체"];
-      for(const sb of subKeys){
-        const subjExps = exps.filter(e=>e.subject===subj && e.sub===sb && e.status!=="removed");
-        if(subjExps.length===0) continue;
-        lines.push(`${subj}${sb!=="전체"?" · "+sb:""}:`);
-        for(const track of ELS_TRACKS){
-          const list = subjExps.filter(e=>e.track===track.key).sort((a,b)=>a.order-b.order);
-          if(list.length===0) continue;
-          lines.push(`  ${track.label}: ` + list.map(e=>`${e.name}${e.score>0?`(★${e.score})`:""}`).join(" > "));
-        }
-      }
-    }
+    const bySubj={};
+    memos.forEach(m=>{ if(!bySubj[m.subject]) bySubj[m.subject]=[]; bySubj[m.subject].push(m); });
+    Object.entries(bySubj).forEach(([subj,list])=>{
+      lines.push(`${subj}:`);
+      const byFolder={};
+      list.forEach(m=>{ const fk=m.folderId||"미분류"; if(!byFolder[fk]) byFolder[fk]=[]; byFolder[fk].push(m); });
+      Object.entries(byFolder).forEach(([fid,flist])=>{
+        const folderName = fid==="미분류" ? "미분류" : (folders.find(f=>f.id===Number(fid))?.name || "삭제된 폴더");
+        lines.push(`  📁 ${folderName}:`);
+        flist.sort((a,b)=>a.date.localeCompare(b.date)).forEach(m=>{
+          lines.push(`    - [${m.date}]${m.starred?" ⭐":""} ${m.text}`);
+        });
+      });
+    });
   }
-  lines.push("");
-  lines.push(`[이 기간 일요일 리뷰] ${elsReviewsInPeriod.length}회`);
-  if(elsReviewsInPeriod.length===0) lines.push("- 리뷰 기록 없음");
-  else elsReviewsInPeriod.forEach(r=>{
-    const goodNames=r.goodIds.map(id=>exps.find(e=>e.id===id)?.name||"?").join(", ");
-    const badNames=r.badIds.map(id=>exps.find(e=>e.id===id)?.name||"?").join(", ");
-    lines.push(`- [${r.date}] 👍강화: ${goodNames||"없음"} | 👎하향: ${badNames||"없음"}`);
-  });
 
   // 주간 집중 훈련
   const trainings = data.weeklyTrainings||[];
@@ -2060,35 +1995,7 @@ function WeekGoalCard({weekKey, sampleDate, weekIndex, goals, onSave, onStatus, 
   );
 }
 
-// ── ELS (Evolution Learning System) — 과목x계열 실험법 라이브러리 ─────────────
-// 실험법 등록/수정 폼
-function ExperimentForm({onSave, onClose, editData, subject, sub, track}) {
-  const [name,setName]=useState(editData?.name||"");
-  const [note,setNote]=useState(editData?.note||"");
-  return (
-    <Modal title={editData?"실험법 수정":"새 실험법 추가"} onClose={onClose}>
-      <div style={{marginBottom:"0.9rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>실험법 이름</div>
-        <input value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="예: 백지회독, 조건 표시, 패러프레이징"/>
-      </div>
-      <div style={{marginBottom:"1.2rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>메모 (선택)</div>
-        <textarea value={note} onChange={e=>setNote(e.target.value)} rows={3} style={{...inp,resize:"vertical"}} placeholder="구체적으로 어떻게 실행하는지"/>
-      </div>
-      <Btn full onClick={()=>{
-        if(!name.trim())return;
-        onSave({
-          id:editData?.id||Date.now(), subject, sub, track, name, note,
-          score:editData?.score||0, // 0=미평가, 1~5=별점
-          order:editData?.order??9999,
-          status:editData?.status||"active", // active | removed
-        });
-        onClose();
-      }}>저장</Btn>
-    </Modal>
-  );
-}
-
+// ── 별점 컴포넌트 (주간 훈련 평가에서 사용) ─────────────────────────────────────
 function StarRating({value, onChange}) {
   return (
     <div style={{display:"flex",gap:2}}>
@@ -2101,426 +2008,185 @@ function StarRating({value, onChange}) {
     </div>
   );
 }
+// ── 과목별 공부법 메모 (2계층: 폴더 → 메모 블록) ────────────────────────────────
+const MEMO_SUBJECTS = ["전과목 공통","수학","국어","영어","과학","사회","한국사"];
 
-// 실험법 한 줄 카드 — 순서는 수동으로만 이동 (점수와 무관, 학생이 설계한 우선순위 유지)
-function ExperimentRow({exp, onScore, onEdit, onDelete, onMove, isFirst, isLast}) {
-  const dimmed = exp.score>0 && exp.score<=2;
+function MemoFolderForm({onSave, onClose, editData}) {
+  const [name,setName]=useState(editData?.name||"");
   return (
-    <div style={{
-      display:"flex",alignItems:"center",gap:8,padding:"0.55rem 0.7rem",borderRadius:9,
-      background:exp.status==="removed"?"#0a0c1280":"#0a0c12",
-      border:`1px solid ${exp.status==="removed"?"#ef444425":dimmed?"#4b556330":"#1e2230"}`,
-      opacity:exp.status==="removed"?0.45:1
-    }}>
-      <div style={{display:"flex",flexDirection:"column",gap:1}}>
-        <button onClick={()=>onMove(-1)} disabled={isFirst} style={{background:"none",border:"none",color:isFirst?"#2d3241":"#6b7280",cursor:isFirst?"default":"pointer",fontSize:"0.65rem",lineHeight:1,padding:0}}>▲</button>
-        <button onClick={()=>onMove(1)} disabled={isLast} style={{background:"none",border:"none",color:isLast?"#2d3241":"#6b7280",cursor:isLast?"default":"pointer",fontSize:"0.65rem",lineHeight:1,padding:0}}>▼</button>
+    <Modal title={editData?"폴더 이름 수정":"새 폴더 만들기"} onClose={onClose}>
+      <div style={{marginBottom:"1.2rem"}}>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>폴더 이름</div>
+        <input autoFocus value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="예: 오답 패턴, 시험 직전 체크리스트"
+          onKeyDown={e=>{ if(e.key==="Enter" && name.trim()){ onSave(name.trim()); onClose(); } }}/>
       </div>
-      <span style={{color:exp.status==="removed"?"#6b7280":dimmed?"#9ca3af":"#e8eaf0",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",flex:1,textDecoration:exp.status==="removed"?"line-through":"none"}}>
-        {exp.name}
-      </span>
-      {exp.status==="removed"&&<span style={{color:"#ef4444",fontSize:"0.62rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>제거됨</span>}
-      <StarRating value={exp.score} onChange={s=>onScore(exp.id,s)}/>
-      <button onClick={()=>onEdit(exp)} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
-      <button onClick={()=>onDelete(exp.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.78rem"}}>×</button>
-    </div>
-  );
-}
-
-// 계열 하나 (예: 국어-모의고사-문학-구조) — 실험법 목록 + 추가
-function TrackBlock({subject, sub, track, experiments, onSave, onScore, onDelete, onMove}) {
-  const [open,setOpen]=useState(true);
-  const [modalOpen,setModalOpen]=useState(false);
-  const [editExp,setEditExp]=useState(null);
-  const list = experiments.filter(e=>e.subject===subject && e.sub===sub && e.track===track.key).sort((a,b)=>a.order-b.order);
-  const activeCount = list.filter(e=>e.status!=="removed").length;
-  const avgScore = list.filter(e=>e.score>0).length>0
-    ? (list.filter(e=>e.score>0).reduce((a,e)=>a+e.score,0)/list.filter(e=>e.score>0).length).toFixed(1)
-    : null;
-
-  return (
-    <div style={{background:"#0a0c12",border:`1px solid ${track.color}25`,borderRadius:11,overflow:"hidden",marginBottom:8}}>
-      <div onClick={()=>setOpen(o=>!o)} style={{padding:"0.65rem 0.85rem",cursor:"pointer",display:"flex",alignItems:"center",gap:8,background:`${track.color}0c`}}>
-        <span style={{color:track.color,fontWeight:800,fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{track.label}</span>
-        <span style={{color:"#4b5563",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace"}}>{activeCount}개</span>
-        {avgScore&&<span style={{color:"#fbbf24",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace"}}>★{avgScore}</span>}
-        <div style={{flex:1}}/>
-        <button onClick={e=>{e.stopPropagation();setEditExp(null);setModalOpen(true);setOpen(true);}} style={{background:"none",border:"none",color:track.color,cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>+ 실험법</button>
-        <span style={{color:"#4b5563",fontSize:"0.66rem"}}>{open?"▲":"▼"}</span>
-      </div>
-      {open&&(
-        <div style={{padding:"0.6rem 0.7rem"}}>
-          <div style={{color:"#6b7280",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:7}}>{track.desc}</div>
-          {list.length===0
-            ? <div style={{color:"#4b5563",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 실험법 없음</div>
-            : <div style={{display:"flex",flexDirection:"column",gap:5}}>
-                {list.map((exp,i)=>(
-                  <ExperimentRow key={exp.id} exp={exp}
-                    onScore={onScore} onEdit={e=>{setEditExp(e);setModalOpen(true);}} onDelete={onDelete}
-                    onMove={dir=>onMove(exp.id,dir)}
-                    isFirst={i===0} isLast={i===list.length-1}/>
-                ))}
-              </div>
-          }
-        </div>
-      )}
-      {modalOpen&&(
-        <ExperimentForm editData={editExp} subject={subject} sub={sub} track={track.key}
-          onSave={e=>{onSave(e);setModalOpen(false);setEditExp(null);}}
-          onClose={()=>{setModalOpen(false);setEditExp(null);}}/>
-      )}
-    </div>
-  );
-}
-
-// 일요일 밤 리뷰 — 전체 과목x세분화x계열 실험법 중 BEST 3 / WORST 3 선택
-function ELSWeeklyReview({experiments, onSave, onClose}) {
-  const [goodIds,setGoodIds]=useState([]);
-  const [badIds,setBadIds]=useState([]);
-  const active = experiments.filter(e=>e.status!=="removed");
-
-  function toggleGood(id){
-    setBadIds(b=>b.filter(x=>x!==id));
-    setGoodIds(g=>g.includes(id)?g.filter(x=>x!==id):(g.length<3?[...g,id]:g));
-  }
-  function toggleBad(id){
-    setGoodIds(g=>g.filter(x=>x!==id));
-    setBadIds(b=>b.includes(id)?b.filter(x=>x!==id):(b.length<3?[...b,id]:b));
-  }
-
-  // 과목 > 세부 로 그룹핑해서 보여줌
-  const grouped = {};
-  for(const e of active){
-    const gkey = `${e.subject}${e.sub&&e.sub!=="전체"?" · "+e.sub:""}`;
-    if(!grouped[gkey]) grouped[gkey]=[];
-    grouped[gkey].push(e);
-  }
-
-  return (
-    <Modal title="🗓️ 일요일 밤 — ELS 주간 리뷰" onClose={onClose} wide>
-      <p style={{color:"#6b7280",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"1rem",lineHeight:1.6}}>
-        이번 주 가장 효과 좋았던 실험법 최대 3개, 가장 효과 없었던 것 최대 3개를 골라줘.
-      </p>
-      <div style={{display:"flex",flexDirection:"column",gap:12,maxHeight:420,overflowY:"auto",marginBottom:"1rem"}}>
-        {Object.keys(grouped).length===0
-          ? <div style={{color:"#4b5563",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 실험법이 없어.</div>
-          : Object.entries(grouped).map(([gkey,list])=>(
-              <div key={gkey}>
-                <div style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>{gkey}</div>
-                <div style={{display:"flex",flexDirection:"column",gap:5}}>
-                  {list.map(exp=>{
-                    const isGood=goodIds.includes(exp.id);
-                    const isBad=badIds.includes(exp.id);
-                    const track=ELS_TRACKS.find(t=>t.key===exp.track);
-                    return (
-                      <div key={exp.id} style={{
-                        display:"flex",alignItems:"center",gap:8,padding:"0.5rem 0.7rem",borderRadius:8,
-                        background:isGood?"#22c55e12":isBad?"#ef444412":"#0a0c12",
-                        border:`1px solid ${isGood?"#22c55e40":isBad?"#ef444440":"#1e2230"}`
-                      }}>
-                        <span style={{color:track?.color||"#9ca3af",fontSize:"0.68rem",fontWeight:700,fontFamily:"'Noto Sans KR',sans-serif",flexShrink:0}}>{track?.label||exp.track}</span>
-                        <span style={{color:"#d1d5db",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",flex:1}}>{exp.name}</span>
-                        <button onClick={()=>toggleGood(exp.id)} disabled={!isGood&&goodIds.length>=3} style={{
-                          background:isGood?"#22c55e":"#1e223050",border:"1px solid "+(isGood?"#22c55e":"#2a2d3a"),borderRadius:6,
-                          color:isGood?"white":"#6b7280",cursor:goodIds.length>=3&&!isGood?"not-allowed":"pointer",
-                          fontSize:"0.68rem",padding:"0.2rem 0.5rem",fontWeight:700,opacity:goodIds.length>=3&&!isGood?0.4:1
-                        }}>👍</button>
-                        <button onClick={()=>toggleBad(exp.id)} disabled={!isBad&&badIds.length>=3} style={{
-                          background:isBad?"#ef4444":"#1e223050",border:"1px solid "+(isBad?"#ef4444":"#2a2d3a"),borderRadius:6,
-                          color:isBad?"white":"#6b7280",cursor:badIds.length>=3&&!isBad?"not-allowed":"pointer",
-                          fontSize:"0.68rem",padding:"0.2rem 0.5rem",fontWeight:700,opacity:badIds.length>=3&&!isBad?0.4:1
-                        }}>👎</button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ))
-        }
-      </div>
-      <div style={{display:"flex",gap:10,marginBottom:"1rem",fontSize:"0.74rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
-        <span style={{color:"#22c55e"}}>👍 효과 좋음 {goodIds.length}/3</span>
-        <span style={{color:"#ef4444"}}>👎 효과 없음 {badIds.length}/3</span>
-      </div>
-      <Btn full disabled={goodIds.length===0&&badIds.length===0} onClick={()=>{onSave(goodIds,badIds);onClose();}}>리뷰 저장</Btn>
+      <Btn full onClick={()=>{ if(!name.trim())return; onSave(name.trim()); onClose(); }}>저장</Btn>
     </Modal>
   );
 }
 
-// 전체 ELS 시스템 화면 — 과목 선택 → 5계열 전부 펼쳐서 표시
-function ELSSystem({data, setData}) {
-  const [subject,setSubject]=useState("수학");
-  const subs = ELS_SUBCATEGORIES[subject]||[];
-  const [sub,setSub]=useState(subs.length>0?subs[0]:"전체");
-  const [reviewOpen,setReviewOpen]=useState(false);
-  const experiments = data.elsExperiments||[];
-  const reviews = data.elsReviews||[];
-
-  function changeSubject(s){
-    setSubject(s);
-    const newSubs = ELS_SUBCATEGORIES[s]||[];
-    setSub(newSubs.length>0?newSubs[0]:"전체");
-  }
-
-  function saveExperiment(exp){
-    setData(d=>{
-      const list=[...(d.elsExperiments||[])];
-      const idx=list.findIndex(x=>x.id===exp.id);
-      if(idx>=0){
-        list[idx]=exp;
-      } else {
-        // 새로 추가되는 실험법은 같은 (과목,세부,계열) 맨 뒤에 배치
-        const sameTrack=list.filter(x=>x.subject===exp.subject&&x.sub===exp.sub&&x.track===exp.track);
-        const maxOrder=sameTrack.length>0?Math.max(...sameTrack.map(x=>x.order)):0;
-        list.push({...exp, order:maxOrder+1});
-      }
-      return {...d, elsExperiments:list};
-    });
-  }
-  function scoreExperiment(id,score){
-    setData(d=>({...d, elsExperiments:(d.elsExperiments||[]).map(e=>e.id===id?{...e,score}:e)}));
-  }
-  function deleteExperiment(id){
-    setData(d=>({...d, elsExperiments:(d.elsExperiments||[]).filter(e=>e.id!==id)}));
-  }
-  function moveExperiment(id, dir){
-    setData(d=>{
-      const list=[...(d.elsExperiments||[])];
-      const target=list.find(x=>x.id===id);
-      if(!target)return d;
-      const sameTrack=list.filter(x=>x.subject===target.subject&&x.sub===target.sub&&x.track===target.track).sort((a,b)=>a.order-b.order);
-      const idx=sameTrack.findIndex(x=>x.id===id);
-      const swapIdx=idx+dir;
-      if(swapIdx<0||swapIdx>=sameTrack.length)return d;
-      const a=sameTrack[idx], b=sameTrack[swapIdx];
-      const newList=list.map(x=>{
-        if(x.id===a.id)return {...x,order:b.order};
-        if(x.id===b.id)return {...x,order:a.order};
-        return x;
-      });
-      return {...d, elsExperiments:newList};
-    });
-  }
-
-  function saveReview(goodIds, badIds){
-    setData(d=>{
-      const list=(d.elsExperiments||[]).map(e=>{
-        if(goodIds.includes(e.id)) return {...e, score:Math.min(5,(e.score||0)+1)};
-        if(badIds.includes(e.id)) return {...e, score:Math.max(0,(e.score||0)-1)};
-        return e;
-      });
-      const review={id:Date.now(), weekKey:getWeekKey(todayStr()), date:todayStr(), goodIds, badIds};
-      return {...d, elsExperiments:list, elsReviews:[...(d.elsReviews||[]), review]};
-    });
-  }
-
-  const subjExps = experiments.filter(e=>e.subject===subject && e.sub===sub);
-  const totalActive = subjExps.filter(e=>e.status!=="removed").length;
-  const scored = subjExps.filter(e=>e.score>0);
-  const avgAll = scored.length>0 ? (scored.reduce((a,e)=>a+e.score,0)/scored.length).toFixed(1) : "-";
-
+function SubjectMemoForm({onSave, onClose, editData, subject, folderId}) {
+  const [text,setText]=useState(editData?.text||"");
   return (
-    <div>
-      <div style={{background:"#6366f110",border:"1px solid #6366f130",borderRadius:12,padding:"0.9rem 1.1rem",marginBottom:"1rem"}}>
-        <div style={{color:"#818cf8",fontSize:"0.78rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:4}}>Evolution Learning System</div>
-        <div style={{color:"#9ca3af",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
-          모든 공부의 목적은 정답이 아니라 사고를 진화시키는 것. 뼈대(5계열)는 고정, 실험법은 계속 진화한다.
-        </div>
-      </div>
-
-      <div style={{marginBottom:"1.1rem"}}>
-        <Btn small color="#f59e0b" onClick={()=>setReviewOpen(true)}>🗓️ 일요일 리뷰 시작 (BEST 3 / WORST 3)</Btn>
-      </div>
-
-      {reviews.length>0&&(()=>{
-        const last=reviews[reviews.length-1];
-        return (
-          <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:"1rem"}}>
-            <div style={{color:"#6b7280",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
-              최근 리뷰: {last.date} · 👍{last.goodIds.length}개 강화됨 · 👎{last.badIds.length}개 하향됨
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* 과목 선택 */}
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:subs.length>0?8:"1rem"}}>
-        {ELS_SUBJECTS.map(s=>{
-          const c=SUBJECT_COLORS[s];
-          return (
-            <button key={s} onClick={()=>changeSubject(s)} style={{
-              padding:"0.32rem 0.85rem",borderRadius:8,cursor:"pointer",
-              border:`2px solid ${subject===s?c.bg:"transparent"}`,
-              background:c.light,color:c.text,
-              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:700,
-              boxShadow:subject===s?`0 0 10px ${c.bg}50`:undefined
-            }}>{s}</button>
-          );
-        })}
-      </div>
-
-      {/* 세분화 항목 선택 (있는 과목만) */}
-      {subs.length>0&&(
-        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"1rem"}}>
-          {subs.map(sb=>(
-            <button key={sb} onClick={()=>setSub(sb)} style={{
-              padding:"0.28rem 0.7rem",borderRadius:7,cursor:"pointer",
-              border:`1px solid ${sub===sb?"#6366f1":"#2a2d3a"}`,
-              background:sub===sb?"#6366f120":"#111318",
-              color:sub===sb?"#818cf8":"#6b7280",
-              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.74rem",fontWeight:700
-            }}>{sb}</button>
-          ))}
-        </div>
-      )}
-
-      <div style={{display:"flex",gap:10,marginBottom:"1rem"}}>
-        <div style={{color:"#6b7280",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif"}}>
-          {subject}{subs.length>0?` · ${sub}`:""} 실험법 {totalActive}개
-        </div>
-        {avgAll!=="-"&&<div style={{color:"#fbbf24",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace"}}>평균 ★{avgAll}</div>}
-      </div>
-
-      {/* 5계열 전부 */}
-      {ELS_TRACKS.map(track=>(
-        <TrackBlock key={track.key} subject={subject} sub={sub} track={track} experiments={experiments}
-          onSave={saveExperiment} onScore={scoreExperiment} onDelete={deleteExperiment} onMove={moveExperiment}/>
-      ))}
-
-      {reviewOpen&&(
-        <ELSWeeklyReview experiments={experiments} onSave={saveReview} onClose={()=>setReviewOpen(false)}/>
-      )}
-    </div>
-  );
-}
-
-// ── 주간 훈련 3개 (ELS와 별개) — 이번 주만 집중 훈련할 공부법 등록/체크/일요일 평가 ──
-function WeeklyTrainingForm({onSave, onClose, editData, weekKey}) {
-  const [subject,setSubject]=useState(editData?.subject||"수학");
-  const [name,setName]=useState(editData?.name||"");
-  const [method,setMethod]=useState(editData?.method||"");
-  return (
-    <Modal title={editData?"훈련 공부법 수정":"이번 주 훈련 공부법 등록"} onClose={onClose}>
-      <div style={{marginBottom:"0.9rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>과목</div>
-        <select value={subject} onChange={e=>setSubject(e.target.value)} style={inp}>
-          {SUBJECTS.map(s=><option key={s}>{s}</option>)}
-          <option value="전체">전체 (과목 무관)</option>
-        </select>
-      </div>
-      <div style={{marginBottom:"0.9rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>공부법 이름</div>
-        <input value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="예: 백지 인출 복습법"/>
-      </div>
+    <Modal title={editData?"메모 수정":"새 메모 추가"} onClose={onClose}>
       <div style={{marginBottom:"1.2rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>구체적 방법</div>
-        <textarea value={method} onChange={e=>setMethod(e.target.value)} rows={4} style={{...inp,resize:"vertical"}} placeholder="이번 주 동안 매일 어떻게 실행할 건지 구체적으로"/>
+        <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,fontFamily:"'Noto Sans KR',sans-serif",textTransform:"uppercase",letterSpacing:"0.06em"}}>{subject} 메모</div>
+        <textarea autoFocus value={text} onChange={e=>setText(e.target.value)} rows={4} style={{...inp,resize:"vertical"}}
+          placeholder="공부법 팁, 느낀 점, 참고사항 등 자유롭게"/>
       </div>
       <Btn full onClick={()=>{
-        if(!name.trim())return;
-        onSave({
-          id:editData?.id||Date.now(), weekKey, subject, name, method,
-          dailyChecks: editData?.dailyChecks||{},
-          score: editData?.score||0,
-          note: editData?.note||"",
-          evaluated: editData?.evaluated||false,
-        });
+        if(!text.trim())return;
+        onSave({ id:editData?.id||Date.now(), subject, folderId, text:text.trim(), date:editData?.date||todayStr(), starred:editData?.starred||false });
         onClose();
       }}>저장</Btn>
     </Modal>
   );
 }
 
-function WeeklyTrainingCard({training, onEdit, onDelete, onToggleDay, weekDates}) {
-  const c=SUBJECT_COLORS[training.subject];
-  const DAY_KO=["월","화","수","목","금","토","일"];
-  const checkedCount = weekDates.filter(d=>training.dailyChecks?.[d]).length;
+function SubjectMemoCard({memo, onEdit, onDelete, onToggleStar}) {
+  return (
+    <div style={{background:memo.starred?"#fbbf2410":"#0a0c12",border:`1px solid ${memo.starred?"#fbbf2440":"#1e2230"}`,borderRadius:10,padding:"0.75rem 0.9rem",marginBottom:7}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+        <button onClick={()=>onToggleStar(memo.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:"0.95rem",color:memo.starred?"#fbbf24":"#2d3241",padding:0,flexShrink:0,lineHeight:1.4}}>★</button>
+        <div style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65,flex:1,whiteSpace:"pre-wrap"}}>{memo.text}</div>
+        <div style={{display:"flex",gap:5,flexShrink:0}}>
+          <button onClick={()=>onEdit(memo)} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
+          <button onClick={()=>onDelete(memo.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.8rem"}}>×</button>
+        </div>
+      </div>
+      <div style={{color:"#2d3241",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace",marginTop:6,paddingLeft:20}}>{memo.date}</div>
+    </div>
+  );
+}
+
+// 폴더 하나 — 펼치면 그 안의 메모 블록들이 보임
+function MemoFolderBlock({folder, memos, color, onAddMemo, onEditMemo, onDeleteMemo, onToggleStar, onRenameFolder, onDeleteFolder}) {
+  const [open,setOpen]=useState(true);
+  const starredCount = memos.filter(m=>m.starred).length;
+  const sorted = [...memos].sort((a,b)=>(b.starred?1:0)-(a.starred?1:0) || b.id-a.id);
 
   return (
-    <div style={{background:"#0a0c12",border:`1px solid ${c?.bg||"#6366f1"}30`,borderRadius:12,padding:"1rem 1.1rem",marginBottom:10}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8}}>
-        <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-          <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{training.subject}</span>
-          <span style={{color:"#f1f3f9",fontWeight:700,fontSize:"0.88rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{training.name}</span>
-          {training.evaluated&&training.score>0&&(
-            <span style={{color:"#fbbf24",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace"}}>★{training.score}</span>
-          )}
-        </div>
-        <div style={{display:"flex",gap:6,flexShrink:0}}>
-          <button onClick={()=>onEdit(training)} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
-          <button onClick={()=>onDelete(training.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.82rem"}}>×</button>
-        </div>
+    <div style={{background:"#0a0c12",border:`1px solid ${color.bg}30`,borderRadius:12,overflow:"hidden",marginBottom:10}}>
+      <div onClick={()=>setOpen(o=>!o)} style={{padding:"0.7rem 0.9rem",cursor:"pointer",display:"flex",alignItems:"center",gap:8,background:`${color.bg}0c`}}>
+        <span style={{fontSize:"0.85rem"}}>{open?"📂":"📁"}</span>
+        <span style={{color:color.text,fontWeight:800,fontSize:"0.84rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{folder.name}</span>
+        <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{memos.length}개</span>
+        {starredCount>0&&<span style={{color:"#fbbf24",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>★{starredCount}</span>}
+        <div style={{flex:1}}/>
+        <button onClick={e=>{e.stopPropagation();onAddMemo(folder.id);}} style={{background:"none",border:"none",color:color.text,cursor:"pointer",fontSize:"0.7rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700}}>+ 메모</button>
+        <button onClick={e=>{e.stopPropagation();onRenameFolder(folder);}} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>수정</button>
+        <button onClick={e=>{e.stopPropagation();onDeleteFolder(folder.id);}} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.8rem"}}>×</button>
+        <span style={{color:"#2d3241",fontSize:"0.68rem"}}>{open?"▲":"▼"}</span>
       </div>
-      {training.method&&<div style={{color:"#9ca3af",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6,marginBottom:10}}>{training.method}</div>}
-
-      {/* 7일 체크박스 */}
-      <div style={{display:"flex",gap:5,marginBottom:6}}>
-        {weekDates.map((d,i)=>{
-          const checked=!!training.dailyChecks?.[d];
-          const isFuture = new Date(d) > new Date(todayStr());
-          return (
-            <button key={d} onClick={()=>!isFuture&&onToggleDay(training.id,d)} disabled={isFuture} style={{
-              flex:1, padding:"0.4rem 0", borderRadius:7, border:`1px solid ${checked?(c?.bg||"#6366f1"):"#1e2230"}`,
-              background:checked?(c?.bg||"#6366f1")+"25":"#111318",
-              color:isFuture?"#2d3241":checked?(c?.text||"#a5b4fc"):"#6b7280",
-              cursor:isFuture?"default":"pointer", textAlign:"center",
-              fontFamily:"'Noto Sans KR',sans-serif", fontSize:"0.7rem", fontWeight:700
-            }}>
-              <div>{DAY_KO[i]}</div>
-              <div style={{fontSize:"0.85rem",marginTop:2}}>{checked?"✓":""}</div>
-            </button>
-          );
-        })}
-      </div>
-      <div style={{color:"#4b5563",fontSize:"0.7rem",fontFamily:"'JetBrains Mono',monospace"}}>{checkedCount}/7일 실행</div>
-
-      {training.evaluated&&training.note&&(
-        <div style={{marginTop:8,padding:"0.6rem 0.8rem",background:"#111318",borderRadius:8,color:"#9ca3af",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
-          📝 {training.note}
+      {open&&(
+        <div style={{padding:"0.7rem 0.85rem"}}>
+          {sorted.length===0
+            ? <div style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif"}}>메모 없음 — "+ 메모"로 추가해봐</div>
+            : sorted.map(m=><SubjectMemoCard key={m.id} memo={m} onEdit={onEditMemo} onDelete={onDeleteMemo} onToggleStar={onToggleStar}/>)
+          }
         </div>
       )}
     </div>
   );
 }
 
-// 일요일 평가 모달 — 등록된 최대 3개 훈련을 각각 별점+메모로 평가
-function WeeklyEvaluateModal({trainings, onSave, onClose}) {
-  const [scores,setScores]=useState(()=>{
-    const init={};
-    trainings.forEach(t=>{ init[t.id]={score:t.score||0, note:t.note||""}; });
-    return init;
-  });
+function SubjectMemoSystem({data, setData}) {
+  const [subject,setSubject]=useState("수학");
+  const [memoModal,setMemoModal]=useState(null); // "add" | "edit"
+  const [editMemo,setEditMemo]=useState(null);
+  const [activeFolderId,setActiveFolderId]=useState(null); // 메모 추가 대상 폴더
+  const [folderModal,setFolderModal]=useState(null); // "add" | "edit"
+  const [editFolder,setEditFolder]=useState(null);
 
-  function setScore(id,score){ setScores(s=>({...s,[id]:{...s[id],score}})); }
-  function setNote(id,note){ setScores(s=>({...s,[id]:{...s[id],note}})); }
+  const folders = (data.memoFolders||[]).filter(f=>f.subject===subject);
+  const allMemos = (data.subjectMemos||[]).filter(m=>m.subject===subject);
+  const c = SUBJECT_COLORS[subject]||{bg:"#64748b",light:"#64748b30",text:"#cbd5e1"};
+
+  function saveFolder(name){
+    if(folderModal==="edit" && editFolder){
+      setData(d=>({...d, memoFolders:(d.memoFolders||[]).map(f=>f.id===editFolder.id?{...f,name}:f)}));
+    } else {
+      const newFolder={ id:Date.now(), subject, name };
+      setData(d=>({...d, memoFolders:[...(d.memoFolders||[]), newFolder]}));
+    }
+  }
+  function deleteFolder(id){
+    setData(d=>({
+      ...d,
+      memoFolders:(d.memoFolders||[]).filter(f=>f.id!==id),
+      subjectMemos:(d.subjectMemos||[]).filter(m=>m.folderId!==id),
+    }));
+  }
+  function saveMemo(m){
+    setData(d=>{
+      const list=[...(d.subjectMemos||[])];
+      const idx=list.findIndex(x=>x.id===m.id);
+      if(idx>=0) list[idx]=m; else list.push(m);
+      return {...d, subjectMemos:list};
+    });
+  }
+  function deleteMemo(id){
+    setData(d=>({...d, subjectMemos:(d.subjectMemos||[]).filter(m=>m.id!==id)}));
+  }
+  function toggleStar(id){
+    setData(d=>({...d, subjectMemos:(d.subjectMemos||[]).map(m=>m.id===id?{...m,starred:!m.starred}:m)}));
+  }
 
   return (
-    <Modal title="🗓️ 일요일 — 주간 훈련 평가" onClose={onClose} wide>
-      <p style={{color:"#6b7280",fontSize:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"1rem",lineHeight:1.6}}>
-        이번 주 훈련한 공부법 각각을 평가해줘. 다음 주에 계속 쓸지는 별점 보고 네가 판단하면 돼.
-      </p>
-      <div style={{display:"flex",flexDirection:"column",gap:14,marginBottom:"1.2rem"}}>
-        {trainings.map(t=>{
-          const c=SUBJECT_COLORS[t.subject];
-          const checkedCount=Object.values(t.dailyChecks||{}).filter(Boolean).length;
+    <div>
+      <div style={{background:"#6366f110",border:"1px solid #6366f130",borderRadius:12,padding:"0.9rem 1.1rem",marginBottom:"1.1rem"}}>
+        <div style={{color:"#818cf8",fontSize:"0.78rem",fontWeight:800,fontFamily:"'Noto Sans KR',sans-serif",marginBottom:4}}>공부법 메모</div>
+        <div style={{color:"#9ca3af",fontSize:"0.76rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.6}}>
+          과목 안에 폴더를 만들고, 그 안에 짧은 메모를 쌓는다. 중요한 건 ⭐ 표시해서 위로 모은다.
+        </div>
+      </div>
+
+      {/* 과목 선택 */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:"1rem"}}>
+        {MEMO_SUBJECTS.map(s=>{
+          const sc=SUBJECT_COLORS[s]||{bg:"#64748b",light:"#64748b30",text:"#cbd5e1"};
           return (
-            <div key={t.id} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.9rem 1rem"}}>
-              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-                <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{t.subject}</span>
-                <span style={{color:"#f1f3f9",fontWeight:700,fontSize:"0.85rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{t.name}</span>
-                <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{checkedCount}/7일 실행</span>
-              </div>
-              <div style={{marginBottom:8}}>
-                <StarRating value={scores[t.id]?.score||0} onChange={s=>setScore(t.id,s)}/>
-              </div>
-              <input value={scores[t.id]?.note||""} onChange={e=>setNote(t.id,e.target.value)} style={inp} placeholder="느낀 점, 다음 주에 계속 쓸지 메모"/>
-            </div>
+            <button key={s} onClick={()=>setSubject(s)} style={{
+              padding:"0.3rem 0.8rem",borderRadius:8,cursor:"pointer",
+              border:`2px solid ${subject===s?sc.bg:"transparent"}`,
+              background:sc.light,color:sc.text,
+              fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.76rem",fontWeight:700,
+              boxShadow:subject===s?`0 0 10px ${sc.bg}50`:undefined
+            }}>{s}</button>
           );
         })}
-        {trainings.length===0&&<div style={{color:"#4b5563",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif"}}>등록된 훈련 공부법이 없어.</div>}
       </div>
-      <Btn full onClick={()=>{onSave(scores);onClose();}}>평가 완료 저장</Btn>
-    </Modal>
+
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
+        <span style={{color:"#6b7280",fontSize:"0.72rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{subject} 폴더 {folders.length}개 · 메모 {allMemos.length}개</span>
+        <Btn small color="#6366f1" onClick={()=>{setEditFolder(null);setFolderModal("add");}}>+ 폴더 만들기</Btn>
+      </div>
+
+      {folders.length===0
+        ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0",fontFamily:"'Noto Sans KR',sans-serif"}}>폴더가 없어 — "+ 폴더 만들기"로 시작해봐</div>
+        : folders.map(f=>(
+            <MemoFolderBlock key={f.id} folder={f} color={c}
+              memos={allMemos.filter(m=>m.folderId===f.id)}
+              onAddMemo={fid=>{setActiveFolderId(fid);setEditMemo(null);setMemoModal("add");}}
+              onEditMemo={m=>{setActiveFolderId(m.folderId);setEditMemo(m);setMemoModal("edit");}}
+              onDeleteMemo={deleteMemo}
+              onToggleStar={toggleStar}
+              onRenameFolder={f=>{setEditFolder(f);setFolderModal("edit");}}
+              onDeleteFolder={id=>{ if(confirm("이 폴더와 안의 메모를 모두 삭제할까?")) deleteFolder(id); }}/>
+          ))
+      }
+
+      {(folderModal==="add"||folderModal==="edit")&&(
+        <MemoFolderForm editData={folderModal==="edit"?editFolder:null}
+          onSave={saveFolder}
+          onClose={()=>{setFolderModal(null);setEditFolder(null);}}/>
+      )}
+      {(memoModal==="add"||memoModal==="edit")&&(
+        <SubjectMemoForm editData={memoModal==="edit"?editMemo:null} subject={subject} folderId={activeFolderId}
+          onSave={m=>{saveMemo(m);setMemoModal(null);setEditMemo(null);}}
+          onClose={()=>{setMemoModal(null);setEditMemo(null);}}/>
+      )}
+    </div>
   );
 }
 
@@ -3291,13 +2957,35 @@ export default function App() {
   const cloudTimerRef = useRef(null);
   const initialSyncDone = useRef(false);
 
-  // ── 계획 실행 타이머 (전역: 탭 이동해도 유지) ──────────────────────────────────
-  const [activeTimer,setActiveTimer]=useState(null); // { planId, subject, content, startedAt(ms), date }
-  const [timerTick,setTimerTick]=useState(0); // 1초마다 갱신용 더미 state
+  // ── 계획 실행 타이머 (전역: 탭 이동/새로고침/백그라운드에도 유지) ────────────────
+  const TIMER_KEY = "studyos_active_timer";
+  const [activeTimer,setActiveTimerRaw]=useState(()=>{
+    try { const r=localStorage.getItem(TIMER_KEY); return r?JSON.parse(r):null; } catch { return null; }
+  });
+  const [timerTick,setTimerTick]=useState(0); // 화면 숫자 갱신용 더미 state
+
+  function setActiveTimer(v){
+    setActiveTimerRaw(v);
+    try {
+      if (v) localStorage.setItem(TIMER_KEY, JSON.stringify(v));
+      else localStorage.removeItem(TIMER_KEY);
+    } catch {}
+  }
+
+  // 1초 간격 갱신 + 탭이 백그라운드에서 돌아왔을 때(visibilitychange) 즉시 갱신
+  // (setInterval은 백그라운드 탭에서 브라우저가 느리게 만들지만, Date.now() 기반 계산이라
+  //  실제 경과 시간은 항상 정확함 — 화면 숫자만 잠깐 안 움직이다가 복귀 시 바로 맞춰짐)
   useEffect(()=>{
     if(!activeTimer) return;
     const iv=setInterval(()=>setTimerTick(t=>t+1),1000);
-    return ()=>clearInterval(iv);
+    function onVisible(){ if(document.visibilityState==="visible") setTimerTick(t=>t+1); }
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return ()=>{
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
   },[activeTimer]);
 
   function startTimer(plan){
@@ -3364,23 +3052,43 @@ export default function App() {
       const localTime = localData?._syncedAt || 0;
       const cloudTime = cloudData?._syncedAt || 0;
 
-      // 클라우드 데이터가 사실상 비어있으면 (한 번도 저장 안 된 경우) 무시하고 로컬 유지
-      const cloudIsEmpty = !cloudData || (
-        Object.keys(cloudData.timetable||{}).length===0 &&
-        (cloudData.wrongs||[]).length===0 &&
-        (cloudData.elsExperiments||[]).length===0 &&
-        (cloudData.plans2||[]).length===0
-      );
+      // 데이터가 "사실상 비어있는지" 판정 — 모든 필드를 다 확인해야 함
+      // (일부 필드만 확인하면, 실제 데이터가 있는데도 비어있다고 오판해서
+      //  로컬의 빈 상태로 클라우드/서로의 진짜 데이터를 덮어쓰는 사고가 남)
+      function isEffectivelyEmpty(d){
+        if(!d) return true;
+        return (
+          Object.keys(d.timetable||{}).length===0 &&
+          Object.keys(d.plans||{}).length===0 &&
+          (d.wrongs||[]).length===0 &&
+          (d.memoFolders||[]).length===0 &&
+          (d.subjectMemos||[]).length===0 &&
+          (d.plans2||[]).length===0 &&
+          (d.goalItems||[]).length===0 &&
+          (d.weeklyTrainings||[]).length===0 &&
+          Object.keys(d.nightNotes||{}).length===0 &&
+          Object.keys(d.folderNames||{}).length===0
+        );
+      }
+      const cloudIsEmpty = isEffectivelyEmpty(cloudData);
+      const localIsEmpty = isEffectivelyEmpty(localData);
 
-      if (!cloudIsEmpty && cloudTime > localTime) {
-        // 클라우드가 더 최신 → 클라우드 데이터 채택
+      if (!cloudIsEmpty && localIsEmpty) {
+        // 로컬은 비었는데 클라우드엔 실제 데이터가 있음 → 무조건 클라우드 채택
+        // (다른 기기에서 처음 여는 경우가 정확히 이 케이스)
+        setData(cloudData);
+        save(cloudData);
+      } else if (!cloudIsEmpty && cloudTime > localTime) {
+        // 둘 다 데이터가 있고 클라우드가 더 최신 → 클라우드 채택
         setData(cloudData);
         save(cloudData);
       } else {
-        // 로컬이 더 최신이거나 클라우드가 비어있음 → 로컬 유지하고 클라우드에 업로드
+        // 로컬이 더 최신이거나, 로컬에만 데이터가 있거나, 둘 다 비어있음 → 로컬 유지
         setData(localData);
-        const ok = await cloudSave({ ...localData, _syncedAt: Date.now() });
-        if (!ok) { initialSyncDone.current = true; setSyncStatus("error"); return; }
+        if (!localIsEmpty) {
+          const ok = await cloudSave({ ...localData, _syncedAt: Date.now() });
+          if (!ok) { initialSyncDone.current = true; setSyncStatus("error"); return; }
+        }
       }
       initialSyncDone.current = true;
       setSyncStatus("synced");
@@ -3438,7 +3146,7 @@ export default function App() {
     {id:"schedule",label:"계획+타임테이블"},
     {id:"goals",label:"목표"},
     {id:"training",label:"주간 훈련"},
-    {id:"methods",label:"ELS 공부법"},
+    {id:"memos",label:"공부법 메모"},
     {id:"calendar",label:"달력"},
     {id:"wrongs",label:`오답 (${data.wrongs.length})`},
     {id:"ref",label:"레퍼런스"},
@@ -3549,7 +3257,7 @@ export default function App() {
             activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={stopTimer}/>}
           {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
           {tab==="training"&&<WeeklyTrainingSystem data={data} setData={setData}/>}
-          {tab==="methods"&&<ELSSystem data={data} setData={setData}/>}
+          {tab==="memos"&&<SubjectMemoSystem data={data} setData={setData}/>}
           {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
           {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}
             onPractice={e=>setPracticeQueue([e])}
