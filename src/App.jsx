@@ -84,6 +84,32 @@ function save(d) {
   }
 }
 
+// ── 자동 스냅샷 백업 (덮어쓰기 사고 대비, 최근 7일치 보관) ────────────────────────
+const SNAPSHOT_KEY = "studyos_snapshots";
+function saveDailySnapshot(d) {
+  try {
+    const today = todayStr();
+    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    const snapshots = raw ? JSON.parse(raw) : {};
+    // 오늘 스냅샷이 이미 있고 지금 데이터가 더 작으면(항목 수 감소) 안 덮어씀 — 실수로 줄어든 걸 스냅샷으로 보존하지 않기 위함
+    const existing = snapshots[today];
+    const currentSize = JSON.stringify(d).length;
+    if (!existing || currentSize >= (existing.size||0)) {
+      snapshots[today] = { data: d, size: currentSize, savedAt: Date.now() };
+    }
+    // 7일보다 오래된 스냅샷은 정리
+    const cutoff = Date.now() - 7*24*60*60*1000;
+    Object.keys(snapshots).forEach(k=>{ if(snapshots[k].savedAt < cutoff) delete snapshots[k]; });
+    localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshots));
+  } catch {}
+}
+function listSnapshots() {
+  try {
+    const raw = localStorage.getItem(SNAPSHOT_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
 // ── Supabase 자동 동기화 (기기 간 데이터 공유) ─────────────────────────────────
 const SUPABASE_URL = "https://xvvjvrgmgircgtpxcbzl.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2dmp2cmdtZ2lyY2d0cHhjYnpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDU5OTcsImV4cCI6MjA5OTU4MTk5N30.mfArU3TkTBhXHov5MKhglLTJRMf3Rxc7TKeNqXD-sjI";
@@ -1789,6 +1815,8 @@ function BackupModal({data,onImport,onClose}) {
   const [msg,setMsg]=useState("");
   const [showText,setShowText]=useState(false);
   const jsonText=JSON.stringify(data);
+  const snapshots = listSnapshots();
+  const snapshotDates = Object.keys(snapshots).sort().reverse();
 
   function doExport(){
     try{const b=new Blob([jsonText],{type:"application/json"});const a=document.createElement("a");a.href=URL.createObjectURL(b);a.download=`studyos_${todayStr()}.json`;a.click();}catch(e){}
@@ -1798,14 +1826,21 @@ function BackupModal({data,onImport,onClose}) {
     try{const p=JSON.parse(importText);if(!p.wrongs&&!p.timetable){setMsg("형식 오류");return;}onImport({...initialData,...p});setMsg("완료!");}
     catch{setMsg("파싱 오류");}
   }
+  function restoreSnapshot(date){
+    const snap = snapshots[date];
+    if (!snap) return;
+    if (!confirm(`${date} 시점 데이터로 되돌릴까? 지금 데이터는 사라져 (미리 내보내기로 백업 권장).`)) return;
+    onImport({...initialData, ...snap.data});
+    onClose();
+  }
 
   return (
     <Modal title="데이터 백업/복원" onClose={onClose}>
       <div style={{display:"flex",gap:3,background:"#111318",borderRadius:8,padding:3,marginBottom:"1.2rem",border:"1px solid #1e2230"}}>
-        {[["export","내보내기"],["import","가져오기"]].map(([v,l])=>(
+        {[["export","내보내기"],["import","가져오기"],["snapshot","자동 스냅샷"]].map(([v,l])=>(
           <button key={v} onClick={()=>setTab(v)} style={{flex:1,padding:"0.42rem",borderRadius:5,border:"none",cursor:"pointer",
             background:tab===v?"#6366f1":"transparent",color:tab===v?"white":"#4b5563",
-            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.8rem",fontWeight:700}}>{l}</button>
+            fontFamily:"'Noto Sans KR',sans-serif",fontSize:"0.78rem",fontWeight:700}}>{l}</button>
         ))}
       </div>
       {tab==="export"&&<div>
@@ -1829,6 +1864,28 @@ function BackupModal({data,onImport,onClose}) {
           style={{...inp,resize:"vertical",marginBottom:"1rem"}} placeholder="내보낸 JSON 붙여넣기"/>
         {msg&&<div style={{color:msg==="완료!"?"#22c55e":"#ef4444",fontSize:"0.8rem",marginBottom:"0.8rem",fontFamily:"'Noto Sans KR',sans-serif"}}>{msg}</div>}
         <Btn full color="#f59e0b" onClick={doImport}>가져오기 (덮어쓰기)</Btn>
+      </div>}
+      {tab==="snapshot"&&<div>
+        <p style={{color:"#6b7280",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif",marginBottom:"1rem",lineHeight:1.6}}>
+          클라우드 동기화가 성공할 때마다 이 기기에 자동으로 하루치 스냅샷이 남아. 실수로 데이터가 사라졌을 때 최근 7일 중 하나로 되돌릴 수 있어.
+        </p>
+        {snapshotDates.length===0
+          ? <div style={{color:"#2d3241",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",textAlign:"center",padding:"2rem 0"}}>아직 저장된 스냅샷이 없어</div>
+          : snapshotDates.map(d=>{
+              const snap=snapshots[d];
+              const w=(snap.data.wrongs||[]).length;
+              const tt=Object.keys(snap.data.timetable||{}).length;
+              return (
+                <div key={d} style={{display:"flex",justifyContent:"space-between",alignItems:"center",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:9,padding:"0.7rem 0.9rem",marginBottom:7}}>
+                  <div>
+                    <div style={{color:"#e8eaf0",fontSize:"0.82rem",fontWeight:700,fontFamily:"'JetBrains Mono',monospace"}}>{d}</div>
+                    <div style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'Noto Sans KR',sans-serif"}}>오답 {w}개 · 타임블록 {tt}일</div>
+                  </div>
+                  <button onClick={()=>restoreSnapshot(d)} style={{background:"#f59e0b18",border:"1px solid #f59e0b40",borderRadius:7,color:"#fbbf24",cursor:"pointer",fontSize:"0.74rem",fontFamily:"'Noto Sans KR',sans-serif",fontWeight:700,padding:"0.35rem 0.8rem"}}>이 시점으로</button>
+                </div>
+              );
+            })
+        }
       </div>}
     </Modal>
   );
@@ -2043,10 +2100,14 @@ function SubjectMemoForm({onSave, onClose, editData, subject, folderId}) {
   );
 }
 
-function SubjectMemoCard({memo, onEdit, onDelete, onToggleStar}) {
+function SubjectMemoCard({memo, onEdit, onDelete, onToggleStar, onMove, isFirst, isLast}) {
   return (
     <div style={{background:memo.starred?"#fbbf2410":"#0a0c12",border:`1px solid ${memo.starred?"#fbbf2440":"#1e2230"}`,borderRadius:10,padding:"0.75rem 0.9rem",marginBottom:7}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
+        <div style={{display:"flex",flexDirection:"column",gap:1,flexShrink:0}}>
+          <button onClick={()=>onMove(-1)} disabled={isFirst} style={{background:"none",border:"none",color:isFirst?"#2d3241":"#6b7280",cursor:isFirst?"default":"pointer",fontSize:"0.62rem",lineHeight:1,padding:0}}>▲</button>
+          <button onClick={()=>onMove(1)} disabled={isLast} style={{background:"none",border:"none",color:isLast?"#2d3241":"#6b7280",cursor:isLast?"default":"pointer",fontSize:"0.62rem",lineHeight:1,padding:0}}>▼</button>
+        </div>
         <button onClick={()=>onToggleStar(memo.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:"0.95rem",color:memo.starred?"#fbbf24":"#2d3241",padding:0,flexShrink:0,lineHeight:1.4}}>★</button>
         <div style={{color:"#d1d5db",fontSize:"0.82rem",fontFamily:"'Noto Sans KR',sans-serif",lineHeight:1.65,flex:1,whiteSpace:"pre-wrap"}}>{memo.text}</div>
         <div style={{display:"flex",gap:5,flexShrink:0}}>
@@ -2054,16 +2115,16 @@ function SubjectMemoCard({memo, onEdit, onDelete, onToggleStar}) {
           <button onClick={()=>onDelete(memo.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.8rem"}}>×</button>
         </div>
       </div>
-      <div style={{color:"#2d3241",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace",marginTop:6,paddingLeft:20}}>{memo.date}</div>
+      <div style={{color:"#2d3241",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace",marginTop:6,paddingLeft:38}}>{memo.date}</div>
     </div>
   );
 }
 
-// 폴더 하나 — 펼치면 그 안의 메모 블록들이 보임
-function MemoFolderBlock({folder, memos, color, onAddMemo, onEditMemo, onDeleteMemo, onToggleStar, onRenameFolder, onDeleteFolder}) {
+// 폴더 하나 — 펼치면 그 안의 메모 블록들이 보임 (순서는 order 필드 기준, 수동 이동)
+function MemoFolderBlock({folder, memos, color, onAddMemo, onEditMemo, onDeleteMemo, onToggleStar, onMoveMemo, onRenameFolder, onDeleteFolder}) {
   const [open,setOpen]=useState(true);
   const starredCount = memos.filter(m=>m.starred).length;
-  const sorted = [...memos].sort((a,b)=>(b.starred?1:0)-(a.starred?1:0) || b.id-a.id);
+  const sorted = [...memos].sort((a,b)=>(a.order??a.id)-(b.order??b.id));
 
   return (
     <div style={{background:"#0a0c12",border:`1px solid ${color.bg}30`,borderRadius:12,overflow:"hidden",marginBottom:10}}>
@@ -2082,7 +2143,8 @@ function MemoFolderBlock({folder, memos, color, onAddMemo, onEditMemo, onDeleteM
         <div style={{padding:"0.7rem 0.85rem"}}>
           {sorted.length===0
             ? <div style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'Noto Sans KR',sans-serif"}}>메모 없음 — "+ 메모"로 추가해봐</div>
-            : sorted.map(m=><SubjectMemoCard key={m.id} memo={m} onEdit={onEditMemo} onDelete={onDeleteMemo} onToggleStar={onToggleStar}/>)
+            : sorted.map((m,i)=><SubjectMemoCard key={m.id} memo={m} onEdit={onEditMemo} onDelete={onDeleteMemo} onToggleStar={onToggleStar}
+                onMove={dir=>onMoveMemo(m.id,dir)} isFirst={i===0} isLast={i===sorted.length-1}/>)
           }
         </div>
       )}
@@ -2121,7 +2183,13 @@ function SubjectMemoSystem({data, setData}) {
     setData(d=>{
       const list=[...(d.subjectMemos||[])];
       const idx=list.findIndex(x=>x.id===m.id);
-      if(idx>=0) list[idx]=m; else list.push(m);
+      if(idx>=0){
+        list[idx]={...list[idx], ...m};
+      } else {
+        const sameFolder=list.filter(x=>x.folderId===m.folderId);
+        const maxOrder=sameFolder.length>0?Math.max(...sameFolder.map(x=>x.order??x.id)):0;
+        list.push({...m, order:maxOrder+1});
+      }
       return {...d, subjectMemos:list};
     });
   }
@@ -2130,6 +2198,25 @@ function SubjectMemoSystem({data, setData}) {
   }
   function toggleStar(id){
     setData(d=>({...d, subjectMemos:(d.subjectMemos||[]).map(m=>m.id===id?{...m,starred:!m.starred}:m)}));
+  }
+  function moveMemo(id, dir){
+    setData(d=>{
+      const list=[...(d.subjectMemos||[])];
+      const target=list.find(x=>x.id===id);
+      if(!target) return d;
+      const sameFolder=list.filter(x=>x.folderId===target.folderId).sort((a,b)=>(a.order??a.id)-(b.order??b.id));
+      const idx=sameFolder.findIndex(x=>x.id===id);
+      const swapIdx=idx+dir;
+      if(swapIdx<0||swapIdx>=sameFolder.length) return d;
+      const a=sameFolder[idx], b=sameFolder[swapIdx];
+      const aOrder=a.order??a.id, bOrder=b.order??b.id;
+      const newList=list.map(x=>{
+        if(x.id===a.id) return {...x, order:bOrder};
+        if(x.id===b.id) return {...x, order:aOrder};
+        return x;
+      });
+      return {...d, subjectMemos:newList};
+    });
   }
 
   return (
@@ -2171,6 +2258,7 @@ function SubjectMemoSystem({data, setData}) {
               onEditMemo={m=>{setActiveFolderId(m.folderId);setEditMemo(m);setMemoModal("edit");}}
               onDeleteMemo={deleteMemo}
               onToggleStar={toggleStar}
+              onMoveMemo={moveMemo}
               onRenameFolder={f=>{setEditFolder(f);setFolderModal("edit");}}
               onDeleteFolder={id=>{ if(confirm("이 폴더와 안의 메모를 모두 삭제할까?")) deleteFolder(id); }}/>
           ))
@@ -3106,6 +3194,7 @@ export default function App() {
       save(stamped);
       const ok = await cloudSave(stamped);
       setSyncStatus(ok ? "synced" : "error");
+      if (ok) saveDailySnapshot(stamped);
     }, 1000);
     return () => { if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current); };
   },[data]);
