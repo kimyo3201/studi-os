@@ -51,8 +51,9 @@ const initialData = {
   weekGoals: {},       // { "2024-W03": "이번 주 목표 텍스트" } -- 구버전, 마이그레이션용
   monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
-  memoFolders: [],       // 메모 폴더: { id, subject, name }
-  subjectMemos: [],      // 과목별 메모: { id, subject, folderId, text, date, starred:bool }
+  postits: [],            // 포스트잇 공부법: { id, subject, text, date, status, blueCount, redCount }
+  dailyTraining: {},      // 오늘의 훈련 3개: { "2024-01-01": [postitId,...] }
+  philosophyNotes: [],    // 공부 철학 노트: { id, text, date }
   nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
 };
 
@@ -195,7 +196,7 @@ const inp = {
    outline:"none", width:"100%", boxSizing:"border-box"
 };
 
-function Lbl({children}){return <Lbl>{children}</Lbl>;}
+function Lbl({children}){return <div style={{color:"#4b5563",fontSize:"0.68rem",marginBottom:4,textTransform:"uppercase",letterSpacing:"0.06em"}}>{children}</div>;}
 
 function Modal({title,onClose,children,wide}) {
   return (
@@ -1196,28 +1197,38 @@ function buildReportText(data, period) {
     });
   }
 
-  // 과목별 메모 (폴더 구조, ⭐ 즐겨찾기 포함)
-  const memos = (data.subjectMemos||[]).filter(m=>new Date(m.date)>=cutoff && new Date(m.date)<=now);
-  const folders = data.memoFolders||[];
+  // 포스트잇 공부법
+  const postits = data.postits||[];
+  const trainingLog = Object.entries(data.dailyTraining||{}).filter(([d])=>new Date(d)>=cutoff && new Date(d)<=now);
   lines.push("");
-  lines.push(`[과목별 메모] ${memos.length}개 (⭐즐겨찾기 ${memos.filter(m=>m.starred).length}개)`);
-  if(memos.length===0) lines.push("- 등록된 메모 없음");
+  lines.push(`[포스트잇 공부법] 총 ${postits.length}개 (체화 ${postits.filter(p=>p.status==="learned").length}개 · 훈련중 ${postits.filter(p=>p.status!=="learned").length}개)`);
+  if(postits.length===0) lines.push("- 등록된 포스트잇 없음");
   else {
     const bySubj={};
-    memos.forEach(m=>{ if(!bySubj[m.subject]) bySubj[m.subject]=[]; bySubj[m.subject].push(m); });
+    postits.forEach(p=>{ if(!bySubj[p.subject]) bySubj[p.subject]=[]; bySubj[p.subject].push(p); });
     Object.entries(bySubj).forEach(([subj,list])=>{
       lines.push(`${subj}:`);
-      const byFolder={};
-      list.forEach(m=>{ const fk=m.folderId||"미분류"; if(!byFolder[fk]) byFolder[fk]=[]; byFolder[fk].push(m); });
-      Object.entries(byFolder).forEach(([fid,flist])=>{
-        const folderName = fid==="미분류" ? "미분류" : (folders.find(f=>f.id===Number(fid))?.name || "삭제된 폴더");
-        lines.push(`  📁 ${folderName}:`);
-        flist.sort((a,b)=>a.date.localeCompare(b.date)).forEach(m=>{
-          lines.push(`    - [${m.date}]${m.starred?" ⭐":""} ${m.text}`);
-        });
+      list.forEach(p=>{
+        lines.push(`  - ${p.text} : 🔵${p.blueCount||0} 🔴${p.redCount||0} ${p.status==="learned"?"[체화됨]":"[훈련중]"}`);
       });
     });
   }
+  lines.push("");
+  lines.push(`[일별 훈련 기록] ${trainingLog.length}일`);
+  if(trainingLog.length===0) lines.push("- 없음");
+  else trainingLog.sort((a,b)=>a[0].localeCompare(b[0])).forEach(([d,ids])=>{
+    const names = ids.map(id=>postits.find(p=>p.id===id)?.text||"?").join(" / ");
+    lines.push(`- [${d}] ${names}`);
+  });
+
+  // 공부 철학 노트
+  const philNotes = (data.philosophyNotes||[]).filter(n=>new Date(n.date)>=cutoff && new Date(n.date)<=now);
+  lines.push("");
+  lines.push(`[공부 철학 노트] ${philNotes.length}개`);
+  if(philNotes.length===0) lines.push("- 없음");
+  else philNotes.sort((a,b)=>a.date.localeCompare(b.date)).forEach(n=>{
+    lines.push(`- [${n.date}] ${n.text}`);
+  });
 
   // 주간/월간 목표 (목표 탭)
   const goalItems = (data.goalItems||[]).filter(g=>{
@@ -1552,215 +1563,243 @@ function WeekGoalCard({weekKey, sampleDate, weekIndex, goals, onSave, onStatus, 
 // ── 과목별 공부법 메모 (2계층: 폴더 → 메모 블록) ────────────────────────────────
 const MEMO_SUBJECTS = ["전과목 공통","수학","국어","영어","과학","사회","한국사"];
 
-function MemoFolderForm({onSave, onClose, editData}) {
-  const [name,setName]=useState(editData?.name||"");
-  return (
-    <Modal title={editData?"폴더 이름 수정":"새 폴더 만들기"} onClose={onClose}>
-      <div style={{marginBottom:"1.2rem"}}>
-        <Lbl>폴더 이름</Lbl>
-        <input autoFocus value={name} onChange={e=>setName(e.target.value)} style={inp} placeholder="예: 오답 패턴, 시험 직전 체크리스트"
-          onKeyDown={e=>{ if(e.key==="Enter" && name.trim()){ onSave(name.trim()); onClose(); } }}/>
-      </div>
-      <Btn full onClick={()=>{ if(!name.trim())return; onSave(name.trim()); onClose(); }}>저장</Btn>
-    </Modal>
-  );
-}
+// ── 포스트잇 공부법 시스템 ────────────────────────────────────────────────────
+// data.postits: [{id, subject, text, date, status, blueCount, redCount}]
+// status: "learned"(파랑2번=체화) | "training"(그 외)
+// data.dailyTraining: {"2024-01-01": [postitId, postitId, postitId]} 최대 3개
+// data.philosophyNotes: [{id, text, date}]  평가 없는 가치관 메모
 
-function SubjectMemoForm({onSave, onClose, editData, subject, folderId}) {
+const PS_SUBJECTS = ["전과목","국어","영어","수학","사회","과학","한국사"];
+
+function PostitForm({onSave, onClose, editData, subject}) {
   const [text,setText]=useState(editData?.text||"");
   return (
-    <Modal title={editData?"메모 수정":"새 메모 추가"} onClose={onClose}>
+    <Modal title={editData?"포스트잇 수정":"새 포스트잇"} onClose={onClose}>
       <div style={{marginBottom:"1.2rem"}}>
-        <Lbl>{subject} 메모</Lbl>
-        <textarea autoFocus value={text} onChange={e=>setText(e.target.value)} rows={4} style={{...inp,resize:"vertical"}}
-          placeholder="공부법 팁, 느낀 점, 참고사항 등 자유롭게"/>
+        <Lbl>{subject} 공부법 한 줄</Lbl>
+        <textarea autoFocus value={text} onChange={e=>setText(e.target.value)} rows={3} style={{...inp,resize:"vertical"}}
+          placeholder="짧게 한 줄. 예: 오답노트 다시 풀기 전 원인 먼저 말로 설명하기"/>
       </div>
       <Btn full onClick={()=>{
         if(!text.trim())return;
-        onSave({ id:editData?.id||Date.now(), subject, folderId, text:text.trim(), date:editData?.date||todayStr(), starred:editData?.starred||false });
+        onSave({ id:editData?.id||Date.now(), subject, text:text.trim(), date:editData?.date||todayStr(),
+          status:editData?.status||"training", blueCount:editData?.blueCount||0, redCount:editData?.redCount||0 });
         onClose();
       }}>저장</Btn>
     </Modal>
   );
 }
 
-function SubjectMemoCard({memo, onEdit, onDelete, onToggleStar, onMove, isFirst, isLast}) {
+// 포스트잇 한 장
+function PostitNote({postit, inTraining, onToggleTraining, onEdit, onDelete, onMark}) {
+  const learned = postit.status==="learned";
+  const bg = learned ? "#1e3a5f" : "#3a2e1e";
+  const rot = ((postit.id % 7) - 3) * 0.6; // 살짝 랜덤 기울기 느낌
   return (
-    <div style={{background:memo.starred?"#fbbf2410":"#0a0c12",border:`1px solid ${memo.starred?"#fbbf2440":"#1e2230"}`,borderRadius:10,padding:"0.75rem 0.9rem",marginBottom:7}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:8}}>
-        <div style={{display:"flex",flexDirection:"column",gap:1,flexShrink:0}}>
-          <button onClick={()=>onMove(-1)} disabled={isFirst} style={{background:"none",border:"none",color:isFirst?"#2d3241":"#6b7280",cursor:isFirst?"default":"pointer",fontSize:"0.62rem",lineHeight:1,padding:0}}>▲</button>
-          <button onClick={()=>onMove(1)} disabled={isLast} style={{background:"none",border:"none",color:isLast?"#2d3241":"#6b7280",cursor:isLast?"default":"pointer",fontSize:"0.62rem",lineHeight:1,padding:0}}>▼</button>
+    <div style={{
+      background:bg, border:`1px solid ${inTraining?"#fbbf24":"rgba(255,255,255,0.08)"}`,
+      borderRadius:4, padding:"0.55rem 0.6rem", minHeight:92, display:"flex", flexDirection:"column",
+      justifyContent:"space-between", boxShadow:"0 3px 8px rgba(0,0,0,0.3)", transform:`rotate(${rot}deg)`,
+      cursor:"pointer", position:"relative"
+    }} onClick={()=>onToggleTraining(postit.id)}>
+      {inTraining && <div style={{position:"absolute",top:4,right:5,fontSize:"0.62rem"}}>📌</div>}
+      <div style={{color:"#f1f3f9",fontSize:"0.72rem",lineHeight:1.4,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{postit.text}</div>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:6}} onClick={e=>e.stopPropagation()}>
+        <div style={{display:"flex",gap:2}}>
+          {Array.from({length:postit.blueCount||0}).map((_,i)=><span key={"b"+i} style={{fontSize:"0.6rem"}}>🔵</span>)}
+          {Array.from({length:postit.redCount||0}).map((_,i)=><span key={"r"+i} style={{fontSize:"0.6rem"}}>🔴</span>)}
         </div>
-        <button onClick={()=>onToggleStar(memo.id)} style={{background:"none",border:"none",cursor:"pointer",fontSize:"0.95rem",color:memo.starred?"#fbbf24":"#2d3241",padding:0,flexShrink:0,lineHeight:1.4}}>★</button>
-        <div style={{color:"#d1d5db",fontSize:"0.82rem",lineHeight:1.65,flex:1,whiteSpace:"pre-wrap"}}>{memo.text}</div>
-        <div style={{display:"flex",gap:5,flexShrink:0}}>
-          <button onClick={()=>onEdit(memo)} style={{background:"none",border:"none",color:"#6366f1",cursor:"pointer",fontSize:"0.68rem"}}>수정</button>
-          <button onClick={()=>onDelete(memo.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.8rem"}}>×</button>
+        <div style={{display:"flex",gap:2}}>
+          <button onClick={()=>onMark(postit.id,"blue")} style={{background:"#3b82f630",border:"none",borderRadius:3,color:"#93c5fd",cursor:"pointer",fontSize:"0.6rem",padding:"0.1rem 0.3rem"}}>✓</button>
+          <button onClick={()=>onMark(postit.id,"red")} style={{background:"#ef444430",border:"none",borderRadius:3,color:"#fca5a5",cursor:"pointer",fontSize:"0.6rem",padding:"0.1rem 0.3rem"}}>✗</button>
+          <button onClick={()=>onEdit(postit)} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.62rem"}}>✎</button>
+          <button onClick={()=>onDelete(postit.id)} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.68rem"}}>×</button>
         </div>
       </div>
-      <div style={{color:"#2d3241",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace",marginTop:6,paddingLeft:38}}>{memo.date}</div>
     </div>
   );
 }
 
-// 폴더 하나 — 펼치면 그 안의 메모 블록들이 보임 (순서는 order 필드 기준, 수동 이동)
-function MemoFolderBlock({folder, memos, color, onAddMemo, onEditMemo, onDeleteMemo, onToggleStar, onMoveMemo, onRenameFolder, onDeleteFolder}) {
-  const [open,setOpen]=useState(true);
-  const starredCount = memos.filter(m=>m.starred).length;
-  const sorted = [...memos].sort((a,b)=>(a.order??a.id)-(b.order??b.id));
-
+// 오늘의 훈련 3개 — 상단 고정
+function TodayTrainingBar({postits, trainingIds, onMark}) {
+  const items = trainingIds.map(id=>postits.find(p=>p.id===id)).filter(Boolean);
   return (
-    <div style={{background:"#0a0c12",border:`1px solid ${color.bg}30`,borderRadius:12,overflow:"hidden",marginBottom:10}}>
-      <div onClick={()=>setOpen(o=>!o)} style={{padding:"0.7rem 0.9rem",cursor:"pointer",display:"flex",alignItems:"center",gap:8,background:`${color.bg}0c`}}>
-        <span style={{fontSize:"0.85rem"}}>{open?"📂":"📁"}</span>
-        <span style={{color:color.text,fontWeight:800,fontSize:"0.84rem"}}>{folder.name}</span>
-        <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{memos.length}개</span>
-        {starredCount>0&&<span style={{color:"#fbbf24",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>★{starredCount}</span>}
-        <div style={{flex:1}}/>
-        <button onClick={e=>{e.stopPropagation();onAddMemo(folder.id);}} style={{background:"none",border:"none",color:color.text,cursor:"pointer",fontSize:"0.7rem",fontWeight:700}}>+ 메모</button>
-        <button onClick={e=>{e.stopPropagation();onRenameFolder(folder);}} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.68rem"}}>수정</button>
-        <button onClick={e=>{e.stopPropagation();onDeleteFolder(folder.id);}} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.8rem"}}>×</button>
-        <span style={{color:"#2d3241",fontSize:"0.68rem"}}>{open?"▲":"▼"}</span>
-      </div>
-      {open&&(
-        <div style={{padding:"0.7rem 0.85rem"}}>
-          {sorted.length===0
-            ? <div style={{color:"#4b5563",fontSize:"0.78rem"}}>메모 없음 — "+ 메모"로 추가해봐</div>
-            : sorted.map((m,i)=><SubjectMemoCard key={m.id} memo={m} onEdit={onEditMemo} onDelete={onDeleteMemo} onToggleStar={onToggleStar}
-                onMove={dir=>onMoveMemo(m.id,dir)} isFirst={i===0} isLast={i===sorted.length-1}/>)
-          }
-        </div>
-      )}
+    <div style={{background:"#f59e0b0c",border:"1px solid #f59e0b30",borderRadius:12,padding:"0.8rem 1rem",marginBottom:"1.1rem"}}>
+      <div style={{color:"#f59e0b",fontSize:"0.74rem",fontWeight:800,marginBottom:8}}>📌 오늘의 훈련 ({items.length}/3)</div>
+      {items.length===0
+        ? <div style={{color:"#4b5563",fontSize:"0.78rem"}}>아래 포스트잇을 눌러서 오늘 훈련할 3개를 골라줘</div>
+        : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
+            {items.map(p=>(
+              <div key={p.id} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:"0.5rem 0.6rem"}}>
+                <div style={{color:SUBJECT_COLORS[p.subject]?.text||"#a5b4fc",fontSize:"0.62rem",fontWeight:700,marginBottom:3}}>{p.subject}</div>
+                <div style={{color:"#d1d5db",fontSize:"0.74rem",lineHeight:1.4,marginBottom:6}}>{p.text}</div>
+                <div style={{display:"flex",gap:5}}>
+                  <button onClick={()=>onMark(p.id,"blue")} style={{flex:1,background:"#3b82f620",border:"1px solid #3b82f640",borderRadius:6,color:"#93c5fd",cursor:"pointer",fontSize:"0.68rem",padding:"0.25rem",fontWeight:700}}>✓ 성공</button>
+                  <button onClick={()=>onMark(p.id,"red")} style={{flex:1,background:"#ef444420",border:"1px solid #ef444440",borderRadius:6,color:"#fca5a5",cursor:"pointer",fontSize:"0.68rem",padding:"0.25rem",fontWeight:700}}>✗ 실패</button>
+                </div>
+              </div>
+            ))}
+          </div>
+      }
     </div>
+  );
+}
+
+function PhilosophyNoteForm({onSave, onClose, editData}) {
+  const [text,setText]=useState(editData?.text||"");
+  return (
+    <Modal title={editData?"철학 노트 수정":"새 철학 노트"} onClose={onClose}>
+      <div style={{marginBottom:"1.2rem"}}>
+        <Lbl>가치관 / 마음가짐 한 줄</Lbl>
+        <textarea autoFocus value={text} onChange={e=>setText(e.target.value)} rows={3} style={{...inp,resize:"vertical"}}
+          placeholder="예: 재미없어도 그냥 앉아서 시작한다"/>
+      </div>
+      <Btn full onClick={()=>{
+        if(!text.trim())return;
+        onSave({ id:editData?.id||Date.now(), text:text.trim(), date:editData?.date||todayStr() });
+        onClose();
+      }}>저장</Btn>
+    </Modal>
   );
 }
 
 function SubjectMemoSystem({data, setData}) {
-  const [subject,setSubject]=useState("수학");
-  const [memoModal,setMemoModal]=useState(null); // "add" | "edit"
-  const [editMemo,setEditMemo]=useState(null);
-  const [activeFolderId,setActiveFolderId]=useState(null); // 메모 추가 대상 폴더
-  const [folderModal,setFolderModal]=useState(null); // "add" | "edit"
-  const [editFolder,setEditFolder]=useState(null);
+  const [subject,setSubject]=useState("전과목");
+  const [modal,setModal]=useState(null); // "add" | "edit" | "philAdd" | "philEdit"
+  const [editPostit,setEditPostit]=useState(null);
+  const [editPhil,setEditPhil]=useState(null);
 
-  const folders = (data.memoFolders||[]).filter(f=>f.subject===subject);
-  const allMemos = (data.subjectMemos||[]).filter(m=>m.subject===subject);
-  const c = SUBJECT_COLORS[subject]||{bg:"#64748b",light:"#64748b30",text:"#cbd5e1"};
+  const postits = data.postits||[];
+  const philNotes = data.philosophyNotes||[];
+  const today = todayStr();
+  const trainingIds = (data.dailyTraining||{})[today] || [];
+  const subjectPostits = postits.filter(p=>p.subject===subject);
 
-  function saveFolder(name){
-    if(folderModal==="edit" && editFolder){
-      setData(d=>({...d, memoFolders:(d.memoFolders||[]).map(f=>f.id===editFolder.id?{...f,name}:f)}));
-    } else {
-      const newFolder={ id:Date.now(), subject, name };
-      setData(d=>({...d, memoFolders:[...(d.memoFolders||[]), newFolder]}));
-    }
+  function savePostit(p){
+    setData(d=>{
+      const list=[...(d.postits||[])];
+      const idx=list.findIndex(x=>x.id===p.id);
+      if(idx>=0) list[idx]=p; else list.push(p);
+      return {...d, postits:list};
+    });
   }
-  function deleteFolder(id){
+  function deletePostit(id){
     setData(d=>({
       ...d,
-      memoFolders:(d.memoFolders||[]).filter(f=>f.id!==id),
-      subjectMemos:(d.subjectMemos||[]).filter(m=>m.folderId!==id),
+      postits:(d.postits||[]).filter(p=>p.id!==id),
+      dailyTraining:{...(d.dailyTraining||{}), [today]:((d.dailyTraining||{})[today]||[]).filter(x=>x!==id)}
     }));
   }
-  function saveMemo(m){
+  function toggleTraining(id){
     setData(d=>{
-      const list=[...(d.subjectMemos||[])];
-      const idx=list.findIndex(x=>x.id===m.id);
-      if(idx>=0){
-        list[idx]={...list[idx], ...m};
-      } else {
-        const sameFolder=list.filter(x=>x.folderId===m.folderId);
-        const maxOrder=sameFolder.length>0?Math.max(...sameFolder.map(x=>x.order??x.id)):0;
-        list.push({...m, order:maxOrder+1});
-      }
-      return {...d, subjectMemos:list};
+      const cur = (d.dailyTraining||{})[today] || [];
+      let next;
+      if(cur.includes(id)) next = cur.filter(x=>x!==id);
+      else if(cur.length>=3){ alert("오늘 훈련은 최대 3개까지야"); return d; }
+      else next = [...cur, id];
+      return {...d, dailyTraining:{...(d.dailyTraining||{}), [today]:next}};
     });
   }
-  function deleteMemo(id){
-    setData(d=>({...d, subjectMemos:(d.subjectMemos||[]).filter(m=>m.id!==id)}));
-  }
-  function toggleStar(id){
-    setData(d=>({...d, subjectMemos:(d.subjectMemos||[]).map(m=>m.id===id?{...m,starred:!m.starred}:m)}));
-  }
-  function moveMemo(id, dir){
+  function markPostit(id, color){
     setData(d=>{
-      const list=[...(d.subjectMemos||[])];
-      const target=list.find(x=>x.id===id);
-      if(!target) return d;
-      const sameFolder=list.filter(x=>x.folderId===target.folderId).sort((a,b)=>(a.order??a.id)-(b.order??b.id));
-      const idx=sameFolder.findIndex(x=>x.id===id);
-      const swapIdx=idx+dir;
-      if(swapIdx<0||swapIdx>=sameFolder.length) return d;
-      const a=sameFolder[idx], b=sameFolder[swapIdx];
-      const aOrder=a.order??a.id, bOrder=b.order??b.id;
-      const newList=list.map(x=>{
-        if(x.id===a.id) return {...x, order:bOrder};
-        if(x.id===b.id) return {...x, order:aOrder};
-        return x;
+      const list=(d.postits||[]).map(p=>{
+        if(p.id!==id) return p;
+        const blueCount = color==="blue" ? (p.blueCount||0)+1 : p.blueCount||0;
+        const redCount = color==="red" ? (p.redCount||0)+1 : p.redCount||0;
+        const status = blueCount>=2 ? "learned" : "training";
+        return {...p, blueCount, redCount, status};
       });
-      return {...d, subjectMemos:newList};
+      return {...d, postits:list};
     });
+  }
+  function savePhil(n){
+    setData(d=>{
+      const list=[...(d.philosophyNotes||[])];
+      const idx=list.findIndex(x=>x.id===n.id);
+      if(idx>=0) list[idx]=n; else list.push(n);
+      return {...d, philosophyNotes:list};
+    });
+  }
+  function deletePhil(id){
+    setData(d=>({...d, philosophyNotes:(d.philosophyNotes||[]).filter(n=>n.id!==id)}));
   }
 
   return (
     <div>
-      <div style={{background:"#6366f110",border:"1px solid #6366f130",borderRadius:12,padding:"0.9rem 1.1rem",marginBottom:"1.1rem"}}>
-        <div style={{color:"#818cf8",fontSize:"0.78rem",fontWeight:800,marginBottom:4}}>공부법 메모</div>
-        <div style={{color:"#9ca3af",fontSize:"0.76rem",lineHeight:1.6}}>
-          과목 안에 폴더를 만들고, 그 안에 짧은 메모를 쌓는다. 중요한 건 ⭐ 표시해서 위로 모은다.
-        </div>
-      </div>
+      <TodayTrainingBar postits={postits} trainingIds={trainingIds} onMark={markPostit}/>
 
-      {/* 과목 선택 */}
+      {/* 과목 탭 */}
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:"1rem"}}>
-        {MEMO_SUBJECTS.map(s=>{
-          const sc=SUBJECT_COLORS[s]||{bg:"#64748b",light:"#64748b30",text:"#cbd5e1"};
+        {PS_SUBJECTS.map(s=>{
+          const c=SUBJECT_COLORS[s]||{bg:"#64748b",light:"#64748b30",text:"#cbd5e1"};
           return (
             <button key={s} onClick={()=>setSubject(s)} style={{
               padding:"0.3rem 0.8rem",borderRadius:8,cursor:"pointer",
-              border:`2px solid ${subject===s?sc.bg:"transparent"}`,
-              background:sc.light,color:sc.text,
-              fontSize:"0.76rem",fontWeight:700,
-              boxShadow:subject===s?`0 0 10px ${sc.bg}50`:undefined
+              border:`2px solid ${subject===s?c.bg:"transparent"}`,
+              background:c.light,color:c.text,fontSize:"0.76rem",fontWeight:700
             }}>{s}</button>
           );
         })}
       </div>
 
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
-        <span style={{color:"#6b7280",fontSize:"0.72rem"}}>{subject} 폴더 {folders.length}개 · 메모 {allMemos.length}개</span>
-        <Btn small color="#6366f1" onClick={()=>{setEditFolder(null);setFolderModal("add");}}>+ 폴더 만들기</Btn>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.7rem"}}>
+        <span style={{color:"#6b7280",fontSize:"0.72rem"}}>{subject} 포스트잇 {subjectPostits.length}개</span>
+        <Btn small color="#f59e0b" onClick={()=>{setEditPostit(null);setModal("add");}}>+ 포스트잇</Btn>
       </div>
 
-      {folders.length===0
-        ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0"}}>폴더가 없어 — "+ 폴더 만들기"로 시작해봐</div>
-        : folders.map(f=>(
-            <MemoFolderBlock key={f.id} folder={f} color={c}
-              memos={allMemos.filter(m=>m.folderId===f.id)}
-              onAddMemo={fid=>{setActiveFolderId(fid);setEditMemo(null);setMemoModal("add");}}
-              onEditMemo={m=>{setActiveFolderId(m.folderId);setEditMemo(m);setMemoModal("edit");}}
-              onDeleteMemo={deleteMemo}
-              onToggleStar={toggleStar}
-              onMoveMemo={moveMemo}
-              onRenameFolder={f=>{setEditFolder(f);setFolderModal("edit");}}
-              onDeleteFolder={id=>{ if(confirm("이 폴더와 안의 메모를 모두 삭제할까?")) deleteFolder(id); }}/>
-          ))
+      {/* 7x4 그리드 */}
+      {subjectPostits.length===0
+        ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0"}}>포스트잇이 없어</div>
+        : <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:8,marginBottom:"1.8rem"}}>
+            {subjectPostits.map(p=>(
+              <PostitNote key={p.id} postit={p} inTraining={trainingIds.includes(p.id)}
+                onToggleTraining={toggleTraining} onEdit={p=>{setEditPostit(p);setModal("edit");}}
+                onDelete={deletePostit} onMark={markPostit}/>
+            ))}
+          </div>
       }
 
-      {(folderModal==="add"||folderModal==="edit")&&(
-        <MemoFolderForm editData={folderModal==="edit"?editFolder:null}
-          onSave={saveFolder}
-          onClose={()=>{setFolderModal(null);setEditFolder(null);}}/>
+      {/* 공부 철학 노트 */}
+      <div style={{borderTop:"1px solid #1e2230",paddingTop:"1.2rem"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.8rem"}}>
+          <span style={{color:"#a78bfa",fontSize:"0.8rem",fontWeight:800}}>📔 공부 철학 노트</span>
+          <Btn small color="#a78bfa" onClick={()=>{setEditPhil(null);setModal("philAdd");}}>+ 노트</Btn>
+        </div>
+        {philNotes.length===0
+          ? <div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1.5rem 0"}}>가치관, 마음가짐을 짧게 적어봐</div>
+          : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
+              {philNotes.map(n=>{
+                const rot=((n.id%7)-3)*0.6;
+                return (
+                  <div key={n.id} style={{background:"#3a2e4a",border:"1px solid rgba(255,255,255,0.08)",borderRadius:4,
+                    padding:"0.6rem 0.65rem",minHeight:80,boxShadow:"0 3px 8px rgba(0,0,0,0.3)",transform:`rotate(${rot}deg)`,
+                    display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+                    <div style={{color:"#f1f3f9",fontSize:"0.74rem",lineHeight:1.4,whiteSpace:"pre-wrap"}}>{n.text}</div>
+                    <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:6}}>
+                      <button onClick={()=>{setEditPhil(n);setModal("philEdit");}} style={{background:"none",border:"none",color:"#c4b5fd",cursor:"pointer",fontSize:"0.64rem"}}>✎</button>
+                      <button onClick={()=>deletePhil(n.id)} style={{background:"none",border:"none",color:"#c4b5fd",cursor:"pointer",fontSize:"0.7rem"}}>×</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+        }
+      </div>
+
+      {(modal==="add"||modal==="edit")&&(
+        <PostitForm editData={modal==="edit"?editPostit:null} subject={subject}
+          onSave={p=>{savePostit(p);setModal(null);setEditPostit(null);}}
+          onClose={()=>{setModal(null);setEditPostit(null);}}/>
       )}
-      {(memoModal==="add"||memoModal==="edit")&&(
-        <SubjectMemoForm editData={memoModal==="edit"?editMemo:null} subject={subject} folderId={activeFolderId}
-          onSave={m=>{saveMemo(m);setMemoModal(null);setEditMemo(null);}}
-          onClose={()=>{setMemoModal(null);setEditMemo(null);}}/>
+      {(modal==="philAdd"||modal==="philEdit")&&(
+        <PhilosophyNoteForm editData={modal==="philEdit"?editPhil:null}
+          onSave={n=>{savePhil(n);setModal(null);setEditPhil(null);}}
+          onClose={()=>{setModal(null);setEditPhil(null);}}/>
       )}
     </div>
   );
 }
+
 
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
 // ── 밤 마무리 한줄 (매일 밤 쓰는 전용 메모, 취소/수정 가능) ────────────────────────
@@ -1817,32 +1856,6 @@ function NightNoteCard({date, note, onSave, onDelete}) {
   );
 }
 
-          <button onClick={()=>setEditing(true)} style={{background:"none",border:"none",color:"#f59e0b",cursor:"pointer",fontSize:"0.72rem",marginLeft:"auto"}}>
-            {hasNote?"수정":"+ 쓰기"}
-          </button>
-        )}
-        {hasNote && !editing && (
-          <button onClick={onDelete} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.7rem"}}>삭제</button>
-        )}
-      </div>
-
-      {editing ? (
-        <div>
-          <input autoFocus value={text} onChange={e=>setText(e.target.value)}
-            onKeyDown={e=>{ if(e.key==="Enter") commit(); if(e.key==="Escape") cancel(); }}
-            style={{...inp, marginBottom:8}} placeholder="오늘 하루 한 줄로 정리하면?"/>
-          <div style={{display:"flex",gap:6}}>
-            <button onClick={commit} style={{flex:1,padding:"0.4rem",borderRadius:7,border:"none",background:"#f59e0b",color:"white",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>저장</button>
-            <button onClick={cancel} style={{flex:1,padding:"0.4rem",borderRadius:7,border:"1px solid #2a2d3a",background:"transparent",color:"#6b7280",fontSize:"0.76rem",cursor:"pointer"}}>취소</button>
-          </div>
-        </div>
-      ) : hasNote ? (
-        <div onClick={()=>setEditing(true)} style={{color:"#d1d5db",fontSize:"0.82rem",cursor:"pointer",lineHeight:1.6}}>{note}</div>
-      ) : null}
-    </div>
-  );
-}
-
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
 function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTimer}) {
   const [date,setDate]=useState(initDate||studyDayStr());
@@ -2254,440 +2267,376 @@ function CalendarView({data,setData,onSelectDate}) {
   );
 }
 
-          <button onClick={()=>setEditing(true)} style={{background:"none",border:"none",color:"#f59e0b",cursor:"pointer",fontSize:"0.72rem",marginLeft:"auto"}}>
-            {hasNote?"수정":"+ 쓰기"}
-          </button>
-        )}
-        {hasNote && !editing && (
-          <button onClick={onDelete} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.7rem"}}>삭제</button>
-        )}
-      </div>
 
-      {editing ? (
-        <div>
-          <input autoFocus value={text} onChange={e=>setText(e.target.value)}
-            onKeyDown={e=>{ if(e.key==="Enter") commit(); if(e.key==="Escape") cancel(); }}
-            style={{...inp, marginBottom:8}} placeholder="오늘 하루 한 줄로 정리하면?"/>
-          <div style={{display:"flex",gap:6}}>
-            <button onClick={commit} style={{flex:1,padding:"0.4rem",borderRadius:7,border:"none",background:"#f59e0b",color:"white",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>저장</button>
-            <button onClick={cancel} style={{flex:1,padding:"0.4rem",borderRadius:7,border:"1px solid #2a2d3a",background:"transparent",color:"#6b7280",fontSize:"0.76rem",cursor:"pointer"}}>취소</button>
-          </div>
-        </div>
-      ) : hasNote ? (
-        <div onClick={()=>setEditing(true)} style={{color:"#d1d5db",fontSize:"0.82rem",cursor:"pointer",lineHeight:1.6}}>{note}</div>
-      ) : null}
-    </div>
-  );
-}
+// ── 메인 ──────────────────────────────────────────────────────────────────────
+export default function App() {
+  const [data,setData]=useState(load);
+  const [tab,setTab]=useState("schedule");
+  const [modal,setModal]=useState(null);
+  const [editWrong,setEditWrong]=useState(null);
+  const [scheduleDate,setScheduleDate]=useState(studyDayStr());
+  const [practiceQueue,setPracticeQueue]=useState(null); // array of wrong entries with photo
+  const [syncStatus,setSyncStatus]=useState("idle"); // idle | syncing | synced | error
+  const cloudTimerRef = useRef(null);
+  const initialSyncDone = useRef(false);
 
-// ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
-function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTimer}) {
-  const [date,setDate]=useState(initDate||studyDayStr());
-  const [paintSubject,setPaintSubject]=useState("수학");
-  const [erasing,setErasing]=useState(false);
-  const [dragging,setDragging]=useState(false);
-  const [planModal,setPlanModal]=useState(null);
-  const [editPlan,setEditPlan]=useState(null);
-  const [planView,setPlanView]=useState("day"); // day | week | month
+  // ── 계획 실행 타이머 (전역: 탭 이동/새로고침/백그라운드에도 유지) ────────────────
+  const TIMER_KEY = "studyos_active_timer";
+  const [activeTimer,setActiveTimerRaw]=useState(()=>{
+    try { const r=localStorage.getItem(TIMER_KEY); return r?JSON.parse(r):null; } catch { return null; }
+  });
+  const [timerTick,setTimerTick]=useState(0); // 화면 숫자 갱신용 더미 state
 
-  const hours=Array.from({length:TOTAL_HOURS},(_,i)=>(START_HOUR+i)%24);
-  const daySlots=data.timetable[date]||{};
-  const totalMins=calcMinutes(daySlots);
-  const subMins=calcSubjectMinutes(daySlots);
-  const dayPlans=(data.plans2||[]).filter(p=>p.date===date).sort((a,b)=>a.subject.localeCompare(b.subject));
-
-  function paint(si){
-    setData(d=>{const tt={...d.timetable};const day={...(tt[date]||{})};
-      if(erasing)delete day[si]; else day[si]=paintSubject;
-      tt[date]=day;return {...d,timetable:tt};});
+  function setActiveTimer(v){
+    setActiveTimerRaw(v);
+    try {
+      if (v) localStorage.setItem(TIMER_KEY, JSON.stringify(v));
+      else localStorage.removeItem(TIMER_KEY);
+    } catch {}
   }
-  function handleDown(si){setDragging(true);paint(si);}
-  function handleEnter(si){if(dragging)paint(si);}
-  function handleUp(){setDragging(false);}
-  function clearDay(){if(!confirm("이 날 타임테이블 초기화?"))return;
-    setData(d=>{const tt={...d.timetable};delete tt[date];return {...d,timetable:tt};});}
 
-  function savePlan(p){
-    setData(d=>{const list=[...(d.plans2||[])];
-      const idx=list.findIndex(x=>x.id===p.id);
-      if(idx>=0)list[idx]=p; else list.push(p);
-      return {...d,plans2:list};});
+  // 1초 간격 갱신 + 탭이 백그라운드에서 돌아왔을 때(visibilitychange) 즉시 갱신
+  // (setInterval은 백그라운드 탭에서 브라우저가 느리게 만들지만, Date.now() 기반 계산이라
+  //  실제 경과 시간은 항상 정확함 — 화면 숫자만 잠깐 안 움직이다가 복귀 시 바로 맞춰짐)
+  useEffect(()=>{
+    if(!activeTimer) return;
+    const iv=setInterval(()=>setTimerTick(t=>t+1),1000);
+    function onVisible(){ if(document.visibilityState==="visible") setTimerTick(t=>t+1); }
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return ()=>{
+      clearInterval(iv);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  },[activeTimer]);
+
+  function startTimer(plan){
+    setActiveTimer({planId:plan.id, subject:plan.subject, content:plan.content, startedAt:Date.now(), date:plan.date});
   }
-  function deletePlan(id){setData(d=>({...d,plans2:(d.plans2||[]).filter(p=>p.id!==id)}));}
-  function setStatus(id,status){
-    setData(d=>{
-      const list=[...(d.plans2||[])];
-      const idx=list.findIndex(x=>x.id===id);if(idx<0)return d;
-      const plan={...list[idx],status};
-      list[idx]=plan;
-      if(status==="failed"){
-        const tom=nextDay(plan.date);
-        if(!list.some(p=>p.id===plan.id+"_m_"+tom))
-          list.push({...plan,id:plan.id+"_m_"+tom,date:tom,status:"todo",note:"[이월] "+plan.content.slice(0,30)});
+  function stopTimer(){
+    if(!activeTimer) return;
+    const elapsedMs = Date.now()-activeTimer.startedAt;
+    const elapsedMin = Math.round(elapsedMs/60000);
+    if(elapsedMin>=1){
+      // 타이머 시작 시각부터 elapsedMin 분만큼 10분 슬롯을 자동으로 채움
+      const startDate = new Date(activeTimer.startedAt);
+      // 학습일 기준: 새벽 6시 이전 시작이면 전날 학습으로 귀속
+      const studyDate = new Date(startDate);
+      if (startDate.getHours() < START_HOUR) studyDate.setDate(startDate.getDate()-1);
+      const dateStr = `${studyDate.getFullYear()}-${String(studyDate.getMonth()+1).padStart(2,"0")}-${String(studyDate.getDate()).padStart(2,"0")}`;
+      const startTotalMin = startDate.getHours()*60+startDate.getMinutes();
+      const startOffsetFromWindow = ((startTotalMin - START_HOUR*60)+1440)%1440; // 06:00 기준 오프셋(분)
+      const startSlot = Math.floor(startOffsetFromWindow/10);
+      const slotCount = Math.max(1, Math.round(elapsedMin/10));
+      setData(d=>{
+        const tt={...d.timetable};
+        const day={...(tt[dateStr]||{})};
+        for(let i=0;i<slotCount;i++){
+          const si=(startSlot+i)%TOTAL_SLOTS;
+          day[si]=activeTimer.subject;
+        }
+        tt[dateStr]=day;
+        // 이 계획에 실행 시간 누적 + 실행 이력 기록
+        const plans=(d.plans2||[]).map(p=>{
+          if(p.id!==activeTimer.planId) return p;
+          const sessions=[...(p.sessions||[]), { date:dateStr, minutes:elapsedMin, startedAt:activeTimer.startedAt, endedAt:Date.now() }];
+          return { ...p, totalMinutes:(p.totalMinutes||0)+elapsedMin, sessions };
+        });
+        return {...d, timetable:tt, plans2:plans};
+      });
+    }
+    setActiveTimer(null);
+  }
+  function timerElapsedLabel(){
+    if(!activeTimer) return "";
+    const sec=Math.floor((Date.now()-activeTimer.startedAt)/1000);
+    const h=Math.floor(sec/3600), m=Math.floor((sec%3600)/60), s=sec%60;
+    return h>0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}` : `${m}:${String(s).padStart(2,"0")}`;
+  }
+
+  // 앱 켜질 때 클라우드 데이터와 로컬 데이터 중 "더 최신"인 쪽을 사용
+  // (빈 클라우드 데이터가 로컬의 실제 기록을 덮어쓰는 사고를 방지)
+  useEffect(()=>{
+    (async () => {
+      // 처음부터 오프라인이면 클라우드 요청 자체를 시도하지 않고 로컬 데이터로 즉시 시작
+      if (typeof navigator !== "undefined" && navigator.onLine === false) {
+        setData(load());
+        initialSyncDone.current = true;
+        setSyncStatus("offline");
+        return;
       }
-      return {...d,plans2:list};});
+      setSyncStatus("syncing");
+      const cloudResult = await cloudLoad();
+      const localData = load();
+
+      if (!cloudResult.ok) {
+        // 클라우드 요청 자체가 실패 (네트워크/API 오류) → 로컬 유지, 실패 표시
+        setData(localData);
+        initialSyncDone.current = true;
+        setSyncStatus("error");
+        return;
+      }
+
+      const cloudData = cloudResult.data;
+      const localTime = localData?._syncedAt || 0;
+      const cloudTime = cloudData?._syncedAt || 0;
+
+      // 데이터가 "사실상 비어있는지" 판정 — 모든 필드를 다 확인해야 함
+      // (일부 필드만 확인하면, 실제 데이터가 있는데도 비어있다고 오판해서
+      //  로컬의 빈 상태로 클라우드/서로의 진짜 데이터를 덮어쓰는 사고가 남)
+      function isEffectivelyEmpty(d){
+        if(!d) return true;
+        return (
+          Object.keys(d.timetable||{}).length===0 &&
+          Object.keys(d.plans||{}).length===0 &&
+          (d.wrongs||[]).length===0 &&
+          (d.postits||[]).length===0 &&
+          (d.philosophyNotes||[]).length===0 &&
+          (d.plans2||[]).length===0 &&
+          (d.goalItems||[]).length===0 &&
+          Object.keys(d.nightNotes||{}).length===0 &&
+          Object.keys(d.folderNames||{}).length===0
+        );
+      }
+      const cloudIsEmpty = isEffectivelyEmpty(cloudData);
+      const localIsEmpty = isEffectivelyEmpty(localData);
+
+      // 로컬 저장본은 용량 문제로 사진(photo)을 빼고 저장하므로,
+      // 로컬 데이터를 쓰기로 하더라도 클라우드에 있던 사진들을 다시 채워 넣어야 화면에 보임.
+      function restorePhotos(target, source) {
+        if (!source) return target;
+        const photoMap = {};
+        (source.wrongs||[]).forEach(w => { if (w.photo) photoMap[w.id] = w.photo; });
+        return {
+          ...target,
+          wrongs: (target.wrongs||[]).map(w => {
+            if (w.photo) return w; // 이미 사진 있음(방금 세션에서 추가한 경우)
+            const restored = photoMap[w.id];
+            return restored ? { ...w, photo: restored } : w;
+          }),
+        };
+      }
+
+      if (!cloudIsEmpty && localIsEmpty) {
+        // 로컬은 비었는데 클라우드엔 실제 데이터가 있음 → 무조건 클라우드 채택
+        // (다른 기기에서 처음 여는 경우가 정확히 이 케이스)
+        setData(cloudData);
+      } else if (!cloudIsEmpty && cloudTime > localTime) {
+        // 둘 다 데이터가 있고 클라우드가 더 최신 → 클라우드 채택
+        setData(cloudData);
+      } else {
+        // 로컬이 더 최신이거나, 로컬에만 데이터가 있거나, 둘 다 비어있음 → 로컬 유지 + 사진 복원
+        const merged = restorePhotos(localData, cloudData);
+        setData(merged);
+        if (!localIsEmpty) {
+          const ok = await cloudSave({ ...merged, _syncedAt: Date.now() });
+          if (!ok) { initialSyncDone.current = true; setSyncStatus("error"); return; }
+        }
+      }
+      initialSyncDone.current = true;
+      setSyncStatus("synced");
+    })();
+  },[]);
+
+  // 로컬 저장은 즉시, 클라우드 저장은 1초 디바운스로 (너무 잦은 요청 방지)
+  useEffect(()=>{
+    save(data);
+    if (!initialSyncDone.current) return; // 초기 로드 직후 자기 자신 덮어쓰기 방지
+    if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
+    setSyncStatus("syncing");
+    cloudTimerRef.current = setTimeout(async () => {
+      const stamped = { ...data, _syncedAt: Date.now() };
+      save(stamped);
+      const ok = await cloudSave(stamped);
+      setSyncStatus(ok ? "synced" : "error");
+      if (ok) saveDailySnapshot(stamped);
+    }, 1000);
+    return () => { if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current); };
+  },[data]);
+
+  // 오프라인 상태에서 등록한 오답/타이머 기록은 localStorage에 그대로 남아있고
+  // (cloudSave가 실패해도 조용히 넘어가도록 설계됨), 인터넷이 다시 연결되는 순간
+  // 자동으로 최신 로컬 데이터를 클라우드에 재전송해서 밀린 내용을 따라잡는다.
+  useEffect(()=>{
+    function handleOnline(){
+      if (!initialSyncDone.current) return;
+      setSyncStatus("syncing");
+      const stamped = { ...data, _syncedAt: Date.now() };
+      save(stamped);
+      cloudSave(stamped).then(ok => setSyncStatus(ok ? "synced" : "error"));
+    }
+    function handleOffline(){ setSyncStatus("offline"); }
+    window.addEventListener("online", handleOnline);
+    window.addEventListener("offline", handleOffline);
+    return () => {
+      window.removeEventListener("online", handleOnline);
+      window.removeEventListener("offline", handleOffline);
+    };
+  },[data]);
+
+  const addWrong=w=>setData(d=>({...d,wrongs:[...d.wrongs,w]}));
+  const updateWrong=w=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===w.id?w:e)}));
+  const updateWrongCounts=(id,patch)=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===id?{...e,...patch}:e)}));
+  const delWrong=id=>setData(d=>({...d,wrongs:d.wrongs.filter(e=>e.id!==id)}));
+  const renameFolder=(key,name)=>setData(d=>({...d,folderNames:{...(d.folderNames||{}),[key]:name}}));
+
+  function handlePracticeResult(entry, result) {
+    setData(d=>({
+      ...d,
+      wrongs: d.wrongs.map(w=>{
+        if(w.id!==entry.id) return w;
+        return {
+          ...w,
+          attemptCount: (w.attemptCount||0)+1,
+          failCount: result==="wrong" ? (w.failCount||0)+1 : (w.failCount||0),
+          solved: result==="correct" ? true : w.solved,
+          lastPracticed: todayStr(),
+        };
+      })
+    }));
   }
 
+  // 이번 주 통계
+  const now=new Date();
+  const weekStart=new Date(now);weekStart.setDate(now.getDate()-6);
+  let weekMins=0;
+  for(let d=new Date(weekStart);d<=now;d.setDate(d.getDate()+1)){
+    const ds=d.toISOString().slice(0,10);
+    weekMins+=calcMinutes(data.timetable[ds]||{});
+  }
+  const weekWrongs=data.wrongs.filter(w=>new Date(w.date)>=weekStart).length;
+
+  const tabs=[
+    {id:"schedule",label:"계획+타임테이블"},
+    {id:"goals",label:"목표"},
+    {id:"memos",label:"공부법 메모"},
+    {id:"calendar",label:"달력"},
+    {id:"wrongs",label:`오답 (${data.wrongs.length})`},
+  ];
+
   return (
-    <div>
-      {/* 날짜 + 컨트롤 */}
-      <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:"1rem",flexWrap:"wrap"}}>
-        <input type="date" value={date} onChange={e=>setDate(e.target.value)}
-          style={{...inp,width:"auto",padding:"0.35rem 0.65rem",fontSize:"0.82rem"}}/>
-        <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:3}}>
-          <button onClick={()=>setErasing(false)} style={{padding:"0.28rem 0.65rem",borderRadius:5,border:"none",cursor:"pointer",
-            background:!erasing?"#6366f1":"transparent",color:!erasing?"white":"#4b5563",
-            fontSize:"0.72rem",fontWeight:700}}>칠하기</button>
-          <button onClick={()=>setErasing(true)} style={{padding:"0.28rem 0.65rem",borderRadius:5,border:"none",cursor:"pointer",
-            background:erasing?"#ef4444":"transparent",color:erasing?"white":"#4b5563",
-            fontSize:"0.72rem",fontWeight:700}}>지우기</button>
-        </div>
-        <Btn small outline color="#4b5563" onClick={clearDay}>초기화</Btn>
-        <div style={{marginLeft:"auto"}}>
-          <span style={{color:"#6366f1",fontSize:"0.9rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace"}}>{Math.floor(totalMins/60)}h {totalMins%60}m</span>
-        </div>
-      </div>
+    <div style={{minHeight:"100vh",background:"#080910"}}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700;800;900&family=JetBrains+Mono:wght@400;700&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0;font-family:'Noto Sans KR',sans-serif;}
+        .mono{font-family:'JetBrains Mono',monospace;}
+        @keyframes pulse{0%,100%{opacity:0.3;transform:scale(0.8)}50%{opacity:1;transform:scale(1)}}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+        .fade{animation:fadeUp 0.3s ease forwards;}
+        button{transition:opacity 0.12s;}button:hover{opacity:0.82;}
+        ::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:#1e2230;border-radius:2px;}
+        input[type=date]::-webkit-calendar-picker-indicator{filter:invert(0.4);}
+        .schedule-grid{grid-template-columns:1fr;}
+        @media(min-width:720px){.schedule-grid{grid-template-columns:1.2fr 1fr;}}
+      `}</style>
 
-      {/* 과목 팔레트 */}
-      <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"1rem"}}>
-        {SUBJECTS.map(sub=>{
-          const c=SUBJECT_COLORS[sub];const mins=subMins[sub]||0;
-          return <button key={sub} onClick={()=>{setPaintSubject(sub);setErasing(false);}} style={{
-            padding:"0.25rem 0.65rem",borderRadius:7,
-            border:`2px solid ${paintSubject===sub&&!erasing?c?.bg:"transparent"}`,
-            background:c?.light,color:c?.text,
-            fontSize:"0.72rem",fontWeight:700,cursor:"pointer",
-            boxShadow:paintSubject===sub&&!erasing?`0 0 10px ${c?.bg}55`:undefined
-          }}>{sub}{mins>0?" "+Math.floor(mins/60)+"h"+(mins%60?mins%60+"m":""):""}</button>;
-        })}
-      </div>
-
-      {/* 메인: 타임테이블(왼쪽) + 계획(오른쪽), 모바일에선 세로 배치 */}
-      <div className="schedule-grid" style={{display:"grid",gap:12,alignItems:"start"}}>
-
-        {/* 타임테이블 */}
-        <div style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,overflow:"auto",userSelect:"none"}}
-          onMouseLeave={handleUp} onMouseUp={handleUp} onTouchEnd={handleUp}>
-          <div style={{display:"flex",flexDirection:"column",minWidth:36+SLOTS_PER_HOUR*36}}>
-            {/* 분 헤더 */}
-            <div style={{display:"flex",borderBottom:"2px solid #1e2230",background:"#0a0c12",position:"sticky",top:0,zIndex:5}}>
-              <div style={{width:38,flexShrink:0}}/>
-              {Array.from({length:SLOTS_PER_HOUR},(_,mi)=>(
-                <div key={mi} style={{width:36,flexShrink:0,textAlign:"center",padding:"0.22rem 0",borderLeft:"1px solid #1e2230"}}>
-                  <span style={{color:"#4b5563",fontSize:"0.55rem",fontFamily:"'JetBrains Mono',monospace"}}>:{String(mi*10).padStart(2,"0")}</span>
-                </div>
-              ))}
-            </div>
-            {/* 시간 행 */}
-            {hours.map((h,hi)=>(
-              <div key={h} style={{display:"flex",borderBottom:hi<hours.length-1?"1px solid #111318":"none"}}>
-                <div style={{width:38,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",borderRight:"1px solid #1e2230",background:"#0a0c12"}}>
-                  <span style={{color:"#4b5563",fontSize:"0.58rem",fontFamily:"'JetBrains Mono',monospace"}}>{String(h).padStart(2,"0")}시</span>
-                </div>
-                {Array.from({length:SLOTS_PER_HOUR},(_,mi)=>{
-                  const si=hi*SLOTS_PER_HOUR+mi;
-                  const sub=daySlots[si];
-                  const c=sub?SUBJECT_COLORS[sub]:null;
-                  return <div key={mi}
-                    onMouseDown={()=>handleDown(si)} onMouseEnter={()=>handleEnter(si)}
-                    onTouchStart={e=>{e.preventDefault();handleDown(si);}}
-                    onTouchMove={e=>{e.preventDefault();const t=e.touches[0];const el=document.elementFromPoint(t.clientX,t.clientY);if(el?.dataset?.slot)handleEnter(Number(el.dataset.slot));}}
-                    data-slot={si}
-                    style={{width:36,height:28,flexShrink:0,cursor:"crosshair",
-                      background:sub?c?.bg+"e0":"transparent",borderLeft:"1px solid #1a1d27",
-                      position:"relative",transition:"background 0.04s"}}>
-                    {sub&&mi===0&&<span style={{position:"absolute",left:1,top:1,fontSize:"0.5rem",color:"white",
-                      pointerEvents:"none",whiteSpace:"nowrap",overflow:"hidden",maxWidth:32,opacity:0.9}}>{sub}</span>}
-                  </div>;
-                })}
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 계획 패널 */}
+      {/* 헤더 */}
+      <header style={{borderBottom:"1px solid #13151e",padding:"1rem 1.5rem",
+        display:"flex",justifyContent:"space-between",alignItems:"center",
+        position:"sticky",top:0,background:"rgba(8,9,16,0.97)",backdropFilter:"blur(16px)",zIndex:100}}>
         <div>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.6rem",flexWrap:"wrap",gap:6}}>
-            <div style={{display:"flex",gap:3,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:3}}>
-              {[["day","일간"],["week","주간"],["month","월간"]].map(([v,l])=>(
-                <button key={v} onClick={()=>setPlanView(v)} style={{padding:"0.28rem 0.6rem",borderRadius:5,border:"none",cursor:"pointer",
-                  background:planView===v?"#6366f1":"transparent",color:planView===v?"white":"#4b5563",
-                  fontSize:"0.7rem",fontWeight:700}}>{l}</button>
-              ))}
-            </div>
-            {planView==="day"&&<Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 계획 추가</Btn>}
+          <div style={{color:"#f1f3f9",fontSize:"1rem",fontWeight:900,fontFamily:"'JetBrains Mono',monospace",letterSpacing:"-0.02em"}}>
+            STUDY<span style={{color:"#6366f1"}}>_OS</span>
           </div>
-
-          {planView==="day"&&(
-            <>
-              <div style={{marginBottom:8}}>
-                <span style={{color:"#9ca3af",fontSize:"0.76rem",fontWeight:700}}>
-                  오늘 계획 <span style={{color:"#6366f1"}}>{dayPlans.length}개</span>
-                  <span style={{color:"#22c55e",marginLeft:6}}>✅{dayPlans.filter(p=>p.status==="done").length}</span>
-                  <span style={{color:"#ef4444",marginLeft:4}}>❌{dayPlans.filter(p=>p.status==="failed").length}</span>
-                </span>
-              </div>
-              {dayPlans.length===0
-                ?<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0"}}>계획 없음</div>
-                :dayPlans.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus}
-                    onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}
-                    activeTimer={activeTimer} onStartTimer={onStartTimer} onStopTimer={onStopTimer}/>)
-              }
-              <NightNoteCard date={date} note={(data.nightNotes||{})[date]}
-                onSave={text=>setData(d=>({...d, nightNotes:{...(d.nightNotes||{}), [date]:text}}))}
-                onDelete={()=>setData(d=>{ const nn={...(d.nightNotes||{})}; delete nn[date]; return {...d, nightNotes:nn}; })}/>
-            </>
-          )}
-
-          {planView==="week"&&(()=>{
-            const dt=new Date(date);
-            const day=dt.getDay();
-            const mon=new Date(dt); mon.setDate(dt.getDate()-(day===0?6:day-1));
-            const weekDates=Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
-            const DAY_KO=["월","화","수","목","금","토","일"];
-            const weekPlans=(data.plans2||[]).filter(p=>weekDates.includes(p.date));
-            return (
-              <div>
-                <div style={{color:"#4b5563",fontSize:"0.72rem",marginBottom:8}}>
-                  이번 주 계획 <span style={{color:"#6366f1",fontWeight:700}}>{weekPlans.length}개</span>
-                  <span style={{color:"#22c55e",marginLeft:6}}>✅{weekPlans.filter(p=>p.status==="done").length}</span>
-                  <span style={{color:"#ef4444",marginLeft:4}}>❌{weekPlans.filter(p=>p.status==="failed").length}</span>
-                </div>
-                {weekDates.map((wd,i)=>{
-                  const wp=weekPlans.filter(p=>p.date===wd);
-                  if(wp.length===0)return null;
-                  return (
-                    <div key={wd} style={{marginBottom:10}}>
-                      <div onClick={()=>setDate(wd)} style={{cursor:"pointer",color:wd===todayStr()?"#6366f1":"#6b7280",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:5}}>
-                        {DAY_KO[i]} · {wd.slice(5)}
-                      </div>
-                      {wp.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus} onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}
-                        activeTimer={activeTimer} onStartTimer={onStartTimer} onStopTimer={onStopTimer}/>)}
-                    </div>
-                  );
-                })}
-                {weekPlans.length===0&&<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0"}}>이번 주 계획 없음</div>}
-              </div>
-            );
-          })()}
-
-          {planView==="month"&&(()=>{
-            const ym=date.slice(0,7);
-            const monthPlans=(data.plans2||[]).filter(p=>p.date.startsWith(ym));
-            const bySubj={};
-            for(const p of monthPlans){bySubj[p.subject]=(bySubj[p.subject]||0)+1;}
-            const done=monthPlans.filter(p=>p.status==="done").length;
-            const failed=monthPlans.filter(p=>p.status==="failed").length;
-            const rate=monthPlans.length>0?Math.round((done/monthPlans.length)*100):0;
-            return (
-              <div>
-                <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:"1rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.8rem"}}>
-                  {[["총",monthPlans.length,"#6b7280"],["완료",done,"#22c55e"],["실패",failed,"#ef4444"],["달성률",rate+"%","#f59e0b"]].map(([l,v,c])=>(
-                    <div key={l} style={{textAlign:"center"}}>
-                      <div style={{color:c,fontSize:"1.1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace"}}>{v}</div>
-                      <div style={{color:"#4b5563",fontSize:"0.62rem"}}>{l}</div>
-                    </div>
-                  ))}
-                </div>
-                <div style={{color:"#4b5563",fontSize:"0.7rem",marginBottom:8}}>과목별 계획 수</div>
-                {Object.entries(bySubj).sort((a,b)=>b[1]-a[1]).map(([s,cnt])=>(
-                  <div key={s} style={{display:"flex",justifyContent:"space-between",padding:"0.4rem 0",borderBottom:"1px solid #111318"}}>
-                    <span style={{color:SUBJECT_COLORS[s]?.text||"#a5b4fc",fontSize:"0.8rem",fontWeight:700}}>{s}</span>
-                    <span style={{color:"#4b5563",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>{cnt}개</span>
-                  </div>
-                ))}
-                {monthPlans.length===0&&<div style={{color:"#2d3241",fontSize:"0.8rem",textAlign:"center",padding:"2rem 0"}}>이번 달 계획 없음</div>}
-              </div>
-            );
-          })()}
-        </div>
-      </div>
-
-      {(planModal==="add"||planModal==="edit")&&(
-        <PlanForm editData={planModal==="edit"?editPlan:null} defaultDate={date}
-          onSave={p=>{savePlan(p);setPlanModal(null);setEditPlan(null);}}
-          onClose={()=>{setPlanModal(null);setEditPlan(null);}}/>
-      )}
-    </div>
-  );
-}
-
-// ── 달력 뷰 ──────────────────────────────────────────────────────────────────
-function CalendarView({data,setData,onSelectDate}) {
-  const [year,setYear]=useState(new Date().getFullYear());
-  const [month,setMonth]=useState(new Date().getMonth());
-  const [selectedDay,setSelectedDay]=useState(null); // 상세보기용, null이면 안 보임
-  const today=todayStr();
-  const MONTH_KO=["1월","2월","3월","4월","5월","6월","7월","8월","9월","10월","11월","12월"];
-  const firstDay=new Date(year,month,1).getDay();
-  const daysInMonth=new Date(year,month+1,0).getDate();
-  const cells=[];
-  for(let i=0;i<(firstDay===0?6:firstDay-1);i++)cells.push(null);
-  for(let d=1;d<=daysInMonth;d++)cells.push(d);
-  function ds(d){return `${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;}
-  function prev(){if(month===0){setMonth(11);setYear(y=>y-1);}else setMonth(m=>m-1);setSelectedDay(null);}
-  function next(){if(month===11){setMonth(0);setYear(y=>y+1);}else setMonth(m=>m+1);setSelectedDay(null);}
-
-  const monthKey=`${year}-${String(month+1).padStart(2,"0")}`;
-  const monthGoalItems=(data.goalItems||[]).filter(g=>g.scope==="month"&&g.scopeKey===monthKey);
-
-  // 이번 달에 걸친 모든 주 목표 모으기 (달 1일~말일 각각의 주차 키를 모아 중복 제거)
-  const weekKeysInMonth=[...new Set(Array.from({length:daysInMonth},(_,i)=>getWeekKey(ds(i+1))))];
-  const weekGoalGroups=weekKeysInMonth.map(wk=>({
-    key:wk,
-    items:(data.goalItems||[]).filter(g=>g.scope==="week"&&g.scopeKey===wk)
-  })).filter(g=>g.items.length>0);
-
-  const selDateStr = selectedDay ? ds(selectedDay) : null;
-  const selDayPlans = selDateStr ? (data.plans2||[]).filter(p=>p.date===selDateStr) : [];
-
-  return (
-    <div>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1.1rem"}}>
-        <button onClick={prev} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer",fontSize:"1.2rem",padding:"0.3rem 0.6rem"}}>‹</button>
-        <span style={{color:"#f1f3f9",fontWeight:800,fontSize:"1rem"}}>{year}년 {MONTH_KO[month]}</span>
-        <button onClick={next} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer",fontSize:"1.2rem",padding:"0.3rem 0.6rem"}}>›</button>
-      </div>
-
-      {/* 이번 달 월간 목표 요약 */}
-      {monthGoalItems.length>0 && (
-        <div style={{background:"#f59e0b12",border:"1px solid #f59e0b30",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:8}}>
-          <div style={{color:"#f59e0b",fontSize:"0.68rem",fontWeight:800,marginBottom:6}}>
-            🏁 이 달의 목표 ({monthGoalItems.filter(g=>g.status==="done").length}/{monthGoalItems.length})
-          </div>
-          {monthGoalItems.map(g=>(
-            <div key={g.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.2rem 0",fontSize:"0.76rem"}}>
-              <span style={{color:g.status==="done"?"#22c55e":"#4b5563"}}>{g.status==="done"?"✅":"○"}</span>
-              <span style={{color:SUBJECT_COLORS[g.subject]?.text||"#a5b4fc",fontWeight:700}}>{g.subject}</span>
-              <span style={{color:g.status==="done"?"#4b5563":"#d1d5db",textDecoration:g.status==="done"?"line-through":"none"}}>{g.content}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 이번 달에 걸친 주간 목표들 */}
-      {weekGoalGroups.length>0 && (
-        <div style={{background:"#6366f112",border:"1px solid #6366f130",borderRadius:10,padding:"0.7rem 0.9rem",marginBottom:12}}>
-          <div style={{color:"#6366f1",fontSize:"0.68rem",fontWeight:800,marginBottom:6}}>🎯 이 달의 주간 목표들</div>
-          {weekGoalGroups.map(({key,items})=>(
-            <div key={key} style={{marginBottom:6}}>
-              <div style={{color:"#6b7280",fontSize:"0.66rem",fontFamily:"'JetBrains Mono',monospace",marginBottom:2}}>{key} ({items.filter(g=>g.status==="done").length}/{items.length})</div>
-              {items.map(g=>(
-                <div key={g.id} style={{display:"flex",alignItems:"center",gap:6,padding:"0.15rem 0",fontSize:"0.75rem"}}>
-                  <span style={{color:g.status==="done"?"#22c55e":"#4b5563"}}>{g.status==="done"?"✅":"○"}</span>
-                  <span style={{color:SUBJECT_COLORS[g.subject]?.text||"#a5b4fc",fontWeight:700}}>{g.subject}</span>
-                  <span style={{color:g.status==="done"?"#4b5563":"#d1d5db",textDecoration:g.status==="done"?"line-through":"none"}}>{g.content}</span>
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,marginBottom:4}}>
-        {["월","화","수","목","금","토","일"].map((d,i)=>(
-          <div key={d} style={{textAlign:"center",color:i===5?"#8b5cf6":i===6?"#ef4444":"#4b5563",fontSize:"0.68rem",fontWeight:700,padding:"0.25rem 0"}}>{d}</div>
-        ))}
-      </div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
-        {cells.map((d,i)=>{
-          if(!d)return <div key={"e"+i}/>;
-          const dateStr=ds(d);
-          const slots=data.timetable[dateStr]||{};
-          const mins=calcMinutes(slots);
-          const subMins=calcSubjectMinutes(slots);
-          const topSub=Object.entries(subMins).sort((a,b)=>b[1]-a[1])[0]?.[0];
-          const plans=(data.plans2||[]).filter(p=>p.date===dateStr);
-          const done=plans.filter(p=>p.status==="done").length;
-          const failed=plans.filter(p=>p.status==="failed").length;
-          const isToday=dateStr===today;
-          const c=topSub?SUBJECT_COLORS[topSub]:null;
-          return (
-            <div key={d} onClick={()=>setSelectedDay(selectedDay===d?null:d)} style={{
-              background:isToday?"#1a1d2e":selectedDay===d?"#171a26":"#0a0c12",
-              border:`1px solid ${selectedDay===d?"#6366f1":isToday?"#6366f150":"#1e2230"}`,
-              borderRadius:9,padding:"0.4rem 0.25rem",cursor:"pointer",
-              minHeight:64,display:"flex",flexDirection:"column",alignItems:"center",gap:2
+          <div style={{color:"#2d3241",fontSize:"0.62rem",marginTop:1,fontFamily:"'JetBrains Mono',monospace",display:"flex",alignItems:"center",gap:5}}>
+            극상위권 학습 시스템
+            <span style={{
+              display:"inline-flex",alignItems:"center",gap:3,
+              color:syncStatus==="syncing"?"#f59e0b":syncStatus==="error"?"#ef4444":syncStatus==="offline"?"#6b7280":"#22c55e"
             }}>
-              <span style={{color:isToday?"#6366f1":i%7===6?"#ef4444":i%7===5?"#8b5cf6":"#9ca3af",
-                fontSize:"0.78rem",fontWeight:isToday?800:400,fontFamily:"'JetBrains Mono',monospace"}}>{d}</span>
-              {mins>0&&<>
-                <div style={{width:"80%",height:3,background:c?.bg||"#6366f1",borderRadius:99,opacity:0.8}}/>
-                <span style={{color:c?.text||"#a5b4fc",fontSize:"0.6rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>
-                  {Math.floor(mins/60)}h{mins%60?mins%60+"m":""}
-                </span>
-              </>}
-              {plans.length>0&&<div style={{fontSize:"0.58rem",lineHeight:1}}>
-                {done>0&&<span style={{color:"#22c55e"}}>✅{done}</span>}
-                {failed>0&&<span style={{color:"#ef4444"}}> ❌{failed}</span>}
-                {plans.filter(p=>p.status==="todo").length>0&&<span style={{color:"#6366f1"}}> ·{plans.filter(p=>p.status==="todo").length}</span>}
-              </div>}
-            </div>
-          );
-        })}
-      </div>
-
-      {/* 선택된 날짜의 일간 계획 상세 */}
-      {selectedDay && (
-        <div style={{marginTop:10,background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,padding:"1rem"}}>
-          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
-            <span style={{color:"#f1f3f9",fontWeight:800,fontSize:"0.85rem"}}>
-              {selDateStr} {selDateStr===today?"(오늘)":""}
+              <span style={{width:5,height:5,borderRadius:"50%",background:"currentColor",display:"inline-block"}}/>
+              {syncStatus==="syncing"?"동기화 중":syncStatus==="error"?"동기화 실패 (F12 콘솔 확인)":syncStatus==="offline"?"오프라인 (로컬 저장 중)":"동기화됨"}
             </span>
-            <button onClick={()=>onSelectDate(selDateStr)} style={{
-              background:"#6366f120",border:"1px solid #6366f140",borderRadius:7,color:"#818cf8",
-              cursor:"pointer",fontSize:"0.72rem",padding:"0.3rem 0.7rem",fontWeight:700
-            }}>타임테이블 열기 →</button>
+            {syncStatus==="error"&&(
+              <button onClick={()=>{
+                setSyncStatus("syncing");
+                cloudSave({...data,_syncedAt:Date.now()}).then(ok=>setSyncStatus(ok?"synced":"error"));
+              }} style={{background:"none",border:"1px solid #ef444450",borderRadius:5,color:"#ef4444",cursor:"pointer",fontSize:"0.6rem",padding:"0.05rem 0.4rem"}}>재시도</button>
+            )}
           </div>
-          {selDayPlans.length===0
-            ? <div style={{color:"#4b5563",fontSize:"0.78rem"}}>이 날 등록된 계획 없음</div>
-            : selDayPlans.map(p=>{
-                const c=SUBJECT_COLORS[p.subject];
-                const statusColor = p.status==="done"?"#22c55e":p.status==="failed"?"#ef4444":"#6b7280";
-                const statusLabel = p.status==="done"?"✅ 완료":p.status==="failed"?"❌ 실패":"○ 예정";
-                return (
-                  <div key={p.id} style={{display:"flex",alignItems:"center",gap:8,padding:"0.3rem 0",fontSize:"0.8rem"}}>
-                    <span style={{color:statusColor,fontSize:"0.72rem",flexShrink:0}}>{statusLabel}</span>
-                    <span style={{color:c?.text||"#a5b4fc",fontWeight:700,flexShrink:0}}>{p.subject}</span>
-                    <span style={{color:p.status==="done"?"#4b5563":"#d1d5db",textDecoration:p.status==="done"?"line-through":"none"}}>{p.content}</span>
-                  </div>
-                );
-              })
-          }
         </div>
-      )}
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          <Btn small color="#ef4444" onClick={()=>{setEditWrong(null);setModal("wrong");}}>오답 등록</Btn>
+          <Btn small outline color="#4b5563" onClick={()=>setModal("backup")}>백업</Btn>
+        </div>
+      </header>
 
-      {/* 월간 통계 */}
-      <div style={{marginTop:"1.2rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,padding:"1rem"}}>
-        <div style={{color:"#4b5563",fontSize:"0.65rem",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:10}}>이번 달 누적</div>
-        {(()=>{
-          const monthSubMins={};
-          for(let d=1;d<=daysInMonth;d++){
-            const sm=calcSubjectMinutes(data.timetable[ds(d)]||{});
-            for(const [s,m] of Object.entries(sm))monthSubMins[s]=(monthSubMins[s]||0)+m;
-          }
-          const total=Object.values(monthSubMins).reduce((a,b)=>a+b,0)||1;
-          const sorted=Object.entries(monthSubMins).sort((a,b)=>b[1]-a[1]);
-          const mp=(data.plans2||[]).filter(p=>p.date.startsWith(year+"-"+String(month+1).padStart(2,"0")));
-          const rate=mp.length>0?Math.round((mp.filter(p=>p.status==="done").length/mp.length)*100):null;
-          return <>
-            {sorted.slice(0,5).map(([sub,m])=>{
-              const c=SUBJECT_COLORS[sub];
-              return <div key={sub} style={{marginBottom:7}}>
-                <div style={{display:"flex",justifyContent:"space-between",marginBottom:2}}>
-                  <span style={{color:c?.text,fontSize:"0.75rem",fontWeight:700}}>{sub}</span>
-                  <span style={{color:"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace"}}>{Math.floor(m/60)}h {m%60}m</span>
-                </div>
-                <div style={{height:4,background:"#111318",borderRadius:99,overflow:"hidden"}}>
-                  <div style={{height:"100%",width:`${(m/total)*100}%`,background:c?.bg,borderRadius:99}}/>
-                </div>
-              </div>;
-            })}
-            {rate!==null&&<div style={{marginTop:8,color:"#f59e0b",fontSize:"0.75rem",fontWeight:700}}>계획 달성률 {rate}%</div>}
-          </>;
-        })()}
-      </div>
+      {/* 실행 중인 타이머 바 — 어느 탭에 있든 항상 보임 */}
+      {activeTimer&&(()=>{const _=timerTick; const c=SUBJECT_COLORS[activeTimer.subject]; return (
+        <div style={{
+          position:"sticky",top:64,zIndex:99,
+          background:`${c?.bg||"#6366f1"}18`,borderBottom:`1px solid ${c?.bg||"#6366f1"}40`,
+          padding:"0.6rem 1.2rem",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"
+        }}>
+          <span style={{width:8,height:8,borderRadius:"50%",background:c?.bg||"#6366f1",animation:"pulse 1.5s infinite",flexShrink:0}}/>
+          <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem"}}>{activeTimer.subject}</span>
+          <span style={{color:"#9ca3af",fontSize:"0.8rem",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{activeTimer.content}</span>
+          <span style={{color:c?.bg||"#6366f1",fontSize:"1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{timerElapsedLabel()}</span>
+          <button onClick={stopTimer} style={{
+            background:"#ef4444",border:"none",borderRadius:8,color:"white",cursor:"pointer",
+            fontSize:"0.78rem",fontWeight:700,padding:"0.35rem 0.9rem",flexShrink:0
+          }}>■ 정지</button>
+        </div>
+      );})()}
+
+      <main style={{maxWidth:900,margin:"0 auto",padding:"1.4rem 1rem"}}>
+
+        {/* 리포트 내보내기 버튼 */}
+        <div style={{display:"flex",gap:7,marginBottom:"1.2rem",flexWrap:"wrap"}}>
+          <button onClick={()=>setModal("report")} style={{
+            padding:"0.52rem 1.1rem",borderRadius:9,border:"none",
+            background:"linear-gradient(135deg,#6366f1,#8b5cf6)",
+            color:"white",fontWeight:700,fontSize:"0.8rem",cursor:"pointer",
+            boxShadow:"0 3px 14px #6366f135"}}>📋 기간별 리포트 내보내기</button>
+        </div>
+
+        {/* 스탯 */}
+        <div style={{display:"flex",gap:8,marginBottom:"1.2rem",flexWrap:"wrap"}}>
+          {[
+            ["이번 주",`${Math.floor(weekMins/60)}h ${weekMins%60}m`,"#6366f1"],
+            ["주간 오답",`${weekWrongs}개`,"#ef4444"],
+            ["총 오답",`${data.wrongs.length}개`,"#f59e0b"],
+          ].map(([l,v,c])=>(
+            <div key={l} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:11,padding:"0.8rem 1rem",flex:1,minWidth:100}}>
+              <div style={{color:"#4b5563",fontSize:"0.62rem",textTransform:"uppercase",letterSpacing:"0.06em",marginBottom:3}}>{l}</div>
+              <div style={{color:c,fontSize:"1.4rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",lineHeight:1}}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* 탭 */}
+        <div style={{display:"flex",gap:3,background:"#0a0c12",borderRadius:10,padding:3,border:"1px solid #1e2230",marginBottom:"1.2rem"}}>
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} style={{
+              flex:1,padding:"0.45rem 0.4rem",borderRadius:7,border:"none",cursor:"pointer",
+              background:tab===t.id?"linear-gradient(135deg,#6366f1,#8b5cf6)":"transparent",
+              color:tab===t.id?"white":"#4b5563",
+              fontSize:"0.78rem",fontWeight:tab===t.id?700:400}}>{t.label}</button>
+          ))}
+        </div>
+
+        <div className="fade" key={tab}>
+          {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}
+            activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={stopTimer}/>}
+          {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
+          {tab==="memos"&&<SubjectMemoSystem data={data} setData={setData}/>}
+          {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
+          {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}
+            onPractice={e=>setPracticeQueue([e])}
+            onPracticeGroup={list=>setPracticeQueue(list)}
+            onUpdateCounts={updateWrongCounts}
+          />}
+        </div>
+      </main>
+
+      {/* 모달 */}
+      {modal==="wrong"&&<WrongForm editData={editWrong} onSave={w=>{editWrong?updateWrong(w):addWrong(w);setModal(null);setEditWrong(null);}} onClose={()=>{setModal(null);setEditWrong(null);}} onDelete={id=>{delWrong(id);setModal(null);setEditWrong(null);}}/>}
+      {modal==="backup"&&<BackupModal data={data} onImport={d=>setData(d)} onClose={()=>setModal(null)}/>}
+      {modal==="report"&&<ReportExport data={data} onClose={()=>setModal(null)}/>}
+      {practiceQueue&&practiceQueue.length>0&&(
+        <PracticeMode queue={practiceQueue} onExit={()=>setPracticeQueue(null)} onResult={handlePracticeResult}/>
+      )}
     </div>
   );
 }
-
