@@ -51,11 +51,10 @@ const initialData = {
   weekGoals: {},       // { "2024-W03": "이번 주 목표 텍스트" } -- 구버전, 마이그레이션용
   monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
-  postits: [],            // 포스트잇 공부법: { id, subject, text, date, status, blueCount, redCount }
-  dailyTraining: {},      // 오늘의 훈련 3개: { "2024-01-01": [postitId,...] }
   philosophyNotes: [],     // 공부 철학 노트 (과목별): { id, subject, text, date }
   tempMemos: [],           // 임시 메모 (여러 장): { id, text, date }
-  permanentNotes: [],      // 영구 메모판 (여러 장): { id, text, date }
+  permanentNotes: [],      // 영구 메모판 (과목별, 훈련 대상): { id, subject, text, date, status, blueCount, redCount }
+  trainingSlots: {},       // 오늘의 훈련 슬롯: { "전과목":[id,id,id], "국어":[id], ... } 전과목=3칸, 과목별=1칸
   nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
 };
 
@@ -1199,15 +1198,15 @@ function buildReportText(data, period) {
     });
   }
 
-  // 포스트잇 공부법
-  const postits = data.postits||[];
-  const trainingLog = Object.entries(data.dailyTraining||{}).filter(([d])=>new Date(d)>=cutoff && new Date(d)<=now);
+  // 영구 메모판 + 훈련 현황
+  const permNotesAll = data.permanentNotes||[];
+  const trainingSlots = data.trainingSlots||{};
   lines.push("");
-  lines.push(`[포스트잇 공부법] 총 ${postits.length}개 (체화 ${postits.filter(p=>p.status==="learned").length}개 · 훈련중 ${postits.filter(p=>p.status!=="learned").length}개)`);
-  if(postits.length===0) lines.push("- 등록된 포스트잇 없음");
+  lines.push(`[영구 메모판] 총 ${permNotesAll.length}개 (체화 ${permNotesAll.filter(p=>p.status==="learned").length}개 · 훈련중 ${permNotesAll.filter(p=>p.status!=="learned").length}개)`);
+  if(permNotesAll.length===0) lines.push("- 등록된 메모 없음");
   else {
     const bySubj={};
-    postits.forEach(p=>{ if(!bySubj[p.subject]) bySubj[p.subject]=[]; bySubj[p.subject].push(p); });
+    permNotesAll.forEach(p=>{ if(!bySubj[p.subject]) bySubj[p.subject]=[]; bySubj[p.subject].push(p); });
     Object.entries(bySubj).forEach(([subj,list])=>{
       lines.push(`${subj}:`);
       list.forEach(p=>{
@@ -1216,11 +1215,13 @@ function buildReportText(data, period) {
     });
   }
   lines.push("");
-  lines.push(`[일별 훈련 기록] ${trainingLog.length}일`);
-  if(trainingLog.length===0) lines.push("- 없음");
-  else trainingLog.sort((a,b)=>a[0].localeCompare(b[0])).forEach(([d,ids])=>{
-    const names = ids.map(id=>postits.find(p=>p.id===id)?.text||"?").join(" / ");
-    lines.push(`- [${d}] ${names}`);
+  lines.push(`[현재 훈련 슬롯]`);
+  const anySlot = Object.values(trainingSlots).some(v=>(v||[]).length>0);
+  if(!anySlot) lines.push("- 없음");
+  else Object.entries(trainingSlots).forEach(([subj,ids])=>{
+    if(!ids||ids.length===0) return;
+    const names = ids.map(id=>permNotesAll.find(p=>p.id===id)?.text||"?").join(" / ");
+    lines.push(`- [${subj}] ${names}`);
   });
 
   // 임시 메모
@@ -1587,92 +1588,93 @@ function WeekGoalCard({weekKey, sampleDate, weekIndex, goals, onSave, onStatus, 
 }
 
 // ── 별점 컴포넌트 (주간 훈련 평가에서 사용) ─────────────────────────────────────
-// ── 과목별 공부법 메모 (2계층: 폴더 → 메모 블록) ────────────────────────────────
-const MEMO_SUBJECTS = ["전과목 공통","수학","국어","영어","과학","사회","한국사"];
-
-// ── 포스트잇 공부법 시스템 ────────────────────────────────────────────────────
-// data.postits: [{id, subject, text, date, status, blueCount, redCount}]
-// status: "learned"(파랑2번=체화) | "training"(그 외)
-// data.dailyTraining: {"2024-01-01": [postitId, postitId, postitId]} 최대 3개
-// data.philosophyNotes: [{id, text, date}]  평가 없는 가치관 메모
+// ── 과목별 영구 메모판 + 훈련 슬롯 ────────────────────────────────────────────
+// data.permanentNotes: [{id, subject, text, date, status, blueCount, redCount}]
+// data.trainingSlots: {"전과목":[id,id,id], "국어":[id], "영어":[id], ...}  전과목=3칸, 과목별=1칸
+// data.tempMemos: [{id, text, date}]
+// data.philosophyNotes: [{id, subject, text, date}]
 
 const PS_SUBJECTS = ["전과목","국어","영어","수학","사회","과학","한국사"];
+const TRAINING_SLOT_MAX = { "전과목":3 };
+function slotMax(subject){ return TRAINING_SLOT_MAX[subject] || 1; }
 
-function PostitForm({onSave, onClose, editData, subject}) {
-  const [text,setText]=useState(editData?.text||"");
-  return (
-    <Modal title={editData?"포스트잇 수정":"새 포스트잇"} onClose={onClose}>
-      <div style={{marginBottom:"1.2rem"}}>
-        <Lbl>{subject} 공부법 한 줄</Lbl>
-        <textarea autoFocus value={text} onChange={e=>setText(e.target.value)} rows={3} style={{...inp,resize:"vertical"}}
-          placeholder="짧게 한 줄. 예: 오답노트 다시 풀기 전 원인 먼저 말로 설명하기"/>
-      </div>
-      <Btn full onClick={()=>{
-        if(!text.trim())return;
-        onSave({ id:editData?.id||Date.now(), subject, text:text.trim(), date:editData?.date||todayStr(),
-          status:editData?.status||"training", blueCount:editData?.blueCount||0, redCount:editData?.redCount||0 });
-        onClose();
-      }}>저장</Btn>
-    </Modal>
-  );
-}
-
-// 포스트잇 한 장
-function PostitNote({postit, inTraining, onToggleTraining, onEdit, onDelete, onMark}) {
-  const learned = postit.status==="learned";
-  const bg = learned ? "#1e3a5f" : "#3a2e1e";
-  const rot = ((postit.id % 7) - 3) * 0.6; // 살짝 랜덤 기울기 느낌
+// 영구 메모판 노트 하나 (훈련 슬롯에 넣고 뺄 수 있음, 훈련 중이면 성공/실패 마킹 가능)
+function PermNote({note, inTraining, onToggleTraining, onEdit, onDelete, onMark}) {
+  const learned = note.status==="learned";
+  const bg = learned ? "#1e3a5f" : inTraining ? "#3a2e1e" : "#3a2e4a";
+  const rot = ((note.id % 7) - 3) * 0.6;
   return (
     <div style={{
       background:bg, border:`1px solid ${inTraining?"#fbbf24":"rgba(255,255,255,0.08)"}`,
-      borderRadius:4, padding:"0.55rem 0.6rem", minHeight:92, display:"flex", flexDirection:"column",
+      borderRadius:4, padding:"0.6rem 0.65rem", minHeight:88, display:"flex", flexDirection:"column",
       justifyContent:"space-between", boxShadow:"0 3px 8px rgba(0,0,0,0.3)", transform:`rotate(${rot}deg)`,
-      cursor:"pointer", position:"relative"
-    }} onClick={()=>onToggleTraining(postit.id)}>
+      position:"relative"
+    }}>
       {inTraining && <div style={{position:"absolute",top:4,right:5,fontSize:"0.62rem"}}>📌</div>}
-      <div style={{color:"#f1f3f9",fontSize:"0.72rem",lineHeight:1.4,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{postit.text}</div>
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginTop:6}} onClick={e=>e.stopPropagation()}>
-        <div style={{display:"flex",gap:2}}>
-          {Array.from({length:postit.blueCount||0}).map((_,i)=><span key={"b"+i} style={{fontSize:"0.6rem"}}>🔵</span>)}
-          {Array.from({length:postit.redCount||0}).map((_,i)=><span key={"r"+i} style={{fontSize:"0.6rem"}}>🔴</span>)}
-        </div>
-        <div style={{display:"flex",gap:2}}>
-          <button onClick={()=>onMark(postit.id,"blue")} style={{background:"#3b82f630",border:"none",borderRadius:3,color:"#93c5fd",cursor:"pointer",fontSize:"0.6rem",padding:"0.1rem 0.3rem"}}>✓</button>
-          <button onClick={()=>onMark(postit.id,"red")} style={{background:"#ef444430",border:"none",borderRadius:3,color:"#fca5a5",cursor:"pointer",fontSize:"0.6rem",padding:"0.1rem 0.3rem"}}>✗</button>
-          <button onClick={()=>onEdit(postit)} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.62rem"}}>✎</button>
-          <button onClick={()=>onDelete(postit.id)} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.68rem"}}>×</button>
+      <div style={{color:"#f1f3f9",fontSize:"0.73rem",lineHeight:1.4,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{note.text}</div>
+      <div>
+        {inTraining && (
+          <div style={{display:"flex",gap:2,marginBottom:4}}>
+            {Array.from({length:note.blueCount||0}).map((_,i)=><span key={"b"+i} style={{fontSize:"0.58rem"}}>🔵</span>)}
+            {Array.from({length:note.redCount||0}).map((_,i)=><span key={"r"+i} style={{fontSize:"0.58rem"}}>🔴</span>)}
+          </div>
+        )}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <button onClick={()=>onToggleTraining(note)} style={{
+            background:inTraining?"#ef444425":"#fbbf2425", border:"none",borderRadius:4,
+            color:inTraining?"#fca5a5":"#fde68a", cursor:"pointer",fontSize:"0.6rem",padding:"0.15rem 0.4rem",fontWeight:700
+          }}>{inTraining?"훈련 내리기":"훈련에 올리기"}</button>
+          <div style={{display:"flex",gap:3}}>
+            {inTraining && <>
+              <button onClick={()=>onMark(note.id,"blue")} style={{background:"#3b82f630",border:"none",borderRadius:3,color:"#93c5fd",cursor:"pointer",fontSize:"0.6rem",padding:"0.1rem 0.3rem"}}>✓</button>
+              <button onClick={()=>onMark(note.id,"red")} style={{background:"#ef444430",border:"none",borderRadius:3,color:"#fca5a5",cursor:"pointer",fontSize:"0.6rem",padding:"0.1rem 0.3rem"}}>✗</button>
+            </>}
+            <button onClick={()=>onEdit(note)} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.62rem"}}>✎</button>
+            <button onClick={()=>onDelete(note.id)} style={{background:"none",border:"none",color:"#9ca3af",cursor:"pointer",fontSize:"0.68rem"}}>×</button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-// 오늘의 훈련 3개 — 상단 고정
-function TodayTrainingBar({postits, trainingIds, onMark}) {
-  const items = trainingIds.map(id=>postits.find(p=>p.id===id)).filter(Boolean);
+// 오늘의 훈련 — 전과목 3칸 + 과목별 1칸씩, 한 화면에 전부
+function TodayTrainingBoard({notes, trainingSlots, onMark}) {
   return (
     <div style={{background:"#f59e0b0c",border:"1px solid #f59e0b30",borderRadius:12,padding:"0.8rem 1rem",marginBottom:"1.1rem"}}>
-      <div style={{color:"#f59e0b",fontSize:"0.74rem",fontWeight:800,marginBottom:8}}>📌 오늘의 훈련 ({items.length}/3)</div>
-      {items.length===0
-        ? <div style={{color:"#4b5563",fontSize:"0.78rem"}}>아래 포스트잇을 눌러서 오늘 훈련할 3개를 골라줘</div>
-        : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:8}}>
-            {items.map(p=>(
-              <div key={p.id} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:"0.5rem 0.6rem"}}>
-                <div style={{color:SUBJECT_COLORS[p.subject]?.text||"#a5b4fc",fontSize:"0.62rem",fontWeight:700,marginBottom:3}}>{p.subject}</div>
-                <div style={{color:"#d1d5db",fontSize:"0.74rem",lineHeight:1.4,marginBottom:6}}>{p.text}</div>
-                <div style={{display:"flex",gap:5}}>
-                  <button onClick={()=>onMark(p.id,"blue")} style={{flex:1,background:"#3b82f620",border:"1px solid #3b82f640",borderRadius:6,color:"#93c5fd",cursor:"pointer",fontSize:"0.68rem",padding:"0.25rem",fontWeight:700}}>✓ 성공</button>
-                  <button onClick={()=>onMark(p.id,"red")} style={{flex:1,background:"#ef444420",border:"1px solid #ef444440",borderRadius:6,color:"#fca5a5",cursor:"pointer",fontSize:"0.68rem",padding:"0.25rem",fontWeight:700}}>✗ 실패</button>
-                </div>
-              </div>
-            ))}
-          </div>
-      }
+      <div style={{color:"#f59e0b",fontSize:"0.74rem",fontWeight:800,marginBottom:8}}>📌 오늘의 훈련</div>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {PS_SUBJECTS.map(subj=>{
+          const ids = trainingSlots[subj]||[];
+          const items = ids.map(id=>notes.find(n=>n.id===id)).filter(Boolean);
+          const max = slotMax(subj);
+          const c = SUBJECT_COLORS[subj]||{text:"#a5b4fc"};
+          return (
+            <div key={subj}>
+              <div style={{color:c.text,fontSize:"0.66rem",fontWeight:700,marginBottom:4}}>{subj} ({items.length}/{max})</div>
+              {items.length===0
+                ? <div style={{color:"#4b5563",fontSize:"0.72rem",paddingLeft:2}}>영구 메모판에서 이 과목 메모를 훈련에 올려봐</div>
+                : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(140px,1fr))",gap:6}}>
+                    {items.map(n=>(
+                      <div key={n.id} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:8,padding:"0.45rem 0.55rem"}}>
+                        <div style={{color:"#d1d5db",fontSize:"0.72rem",lineHeight:1.4,marginBottom:5}}>{n.text}</div>
+                        <div style={{display:"flex",gap:4}}>
+                          <button onClick={()=>onMark(n.id,"blue")} style={{flex:1,background:"#3b82f620",border:"1px solid #3b82f640",borderRadius:5,color:"#93c5fd",cursor:"pointer",fontSize:"0.64rem",padding:"0.2rem",fontWeight:700}}>✓ 성공</button>
+                          <button onClick={()=>onMark(n.id,"red")} style={{flex:1,background:"#ef444420",border:"1px solid #ef444440",borderRadius:5,color:"#fca5a5",cursor:"pointer",fontSize:"0.64rem",padding:"0.2rem",fontWeight:700}}>✗ 실패</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+              }
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
 
-// 색깔만 다른 단순 포스트잇 카드 (임시메모/영구메모판/철학노트 공용)
+// 색깔만 다른 단순 포스트잇 카드 (임시메모/철학노트 공용)
 function SimplePostit({note, bg, textColor, onEdit, onDelete}) {
   const rot=((note.id%7)-3)*0.6;
   return (
@@ -1706,55 +1708,58 @@ function SimplePostitForm({onSave, onClose, editData, title, placeholder}) {
 }
 
 function SubjectMemoSystem({data, setData}) {
-  const [subject,setSubject]=useState("전과목");
+  const [permSubject,setPermSubject]=useState("전과목");
   const [philSubject,setPhilSubject]=useState("전과목");
-  const [modal,setModal]=useState(null); // "add"|"edit"|"tempAdd"|"tempEdit"|"permAdd"|"permEdit"|"philAdd"|"philEdit"
-  const [editPostit,setEditPostit]=useState(null);
+  const [modal,setModal]=useState(null); // "permAdd"|"permEdit"|"tempAdd"|"tempEdit"|"philAdd"|"philEdit"
   const [editNote,setEditNote]=useState(null);
 
-  const postits = data.postits||[];
+  const permNotes = data.permanentNotes||[];
   const tempMemos = data.tempMemos||[];
   const philNotes = data.philosophyNotes||[];
-  const today = todayStr();
-  const trainingIds = (data.dailyTraining||{})[today] || [];
-  const subjectPostits = postits.filter(p=>p.subject===subject);
+  const trainingSlots = data.trainingSlots||{};
+  const permSubjectNotes = permNotes.filter(n=>n.subject===permSubject);
   const philSubjectNotes = philNotes.filter(n=>n.subject===philSubject);
 
-  function savePostit(p){
+  function savePerm(n){
     setData(d=>{
-      const list=[...(d.postits||[])];
-      const idx=list.findIndex(x=>x.id===p.id);
-      if(idx>=0) list[idx]=p; else list.push(p);
-      return {...d, postits:list};
+      const list=[...(d.permanentNotes||[])];
+      const idx=list.findIndex(x=>x.id===n.id);
+      if(idx>=0) list[idx]={...list[idx], ...n, subject:permSubject};
+      else list.push({...n, subject:permSubject, status:"training", blueCount:0, redCount:0});
+      return {...d, permanentNotes:list};
     });
   }
-  function deletePostit(id){
-    setData(d=>({
-      ...d,
-      postits:(d.postits||[]).filter(p=>p.id!==id),
-      dailyTraining:{...(d.dailyTraining||{}), [today]:((d.dailyTraining||{})[today]||[]).filter(x=>x!==id)}
-    }));
-  }
-  function toggleTraining(id){
+  function deletePerm(id){
     setData(d=>{
-      const cur = (d.dailyTraining||{})[today] || [];
-      let next;
-      if(cur.includes(id)) next = cur.filter(x=>x!==id);
-      else if(cur.length>=3){ alert("오늘 훈련은 최대 3개까지야"); return d; }
-      else next = [...cur, id];
-      return {...d, dailyTraining:{...(d.dailyTraining||{}), [today]:next}};
+      const slots={...(d.trainingSlots||{})};
+      for(const k in slots) slots[k]=(slots[k]||[]).filter(x=>x!==id);
+      return {...d, permanentNotes:(d.permanentNotes||[]).filter(n=>n.id!==id), trainingSlots:slots};
     });
   }
-  function markPostit(id, color){
+  function toggleTraining(note){
     setData(d=>{
-      const list=(d.postits||[]).map(p=>{
-        if(p.id!==id) return p;
-        const blueCount = color==="blue" ? (p.blueCount||0)+1 : p.blueCount||0;
-        const redCount = color==="red" ? (p.redCount||0)+1 : p.redCount||0;
+      const slots={...(d.trainingSlots||{})};
+      const subj=note.subject;
+      const cur=slots[subj]||[];
+      if(cur.includes(note.id)){
+        slots[subj]=cur.filter(x=>x!==note.id);
+      } else {
+        if(cur.length>=slotMax(subj)){ alert(`${subj} 훈련 슬롯은 최대 ${slotMax(subj)}개까지야`); return d; }
+        slots[subj]=[...cur, note.id];
+      }
+      return {...d, trainingSlots:slots};
+    });
+  }
+  function markPerm(id, color){
+    setData(d=>{
+      const list=(d.permanentNotes||[]).map(n=>{
+        if(n.id!==id) return n;
+        const blueCount = color==="blue" ? (n.blueCount||0)+1 : n.blueCount||0;
+        const redCount = color==="red" ? (n.redCount||0)+1 : n.redCount||0;
         const status = blueCount>=2 ? "learned" : "training";
-        return {...p, blueCount, redCount, status};
+        return {...n, blueCount, redCount, status};
       });
-      return {...d, postits:list};
+      return {...d, permanentNotes:list};
     });
   }
   function saveTemp(n){
@@ -1768,17 +1773,6 @@ function SubjectMemoSystem({data, setData}) {
   function deleteTemp(id){
     setData(d=>({...d, tempMemos:(d.tempMemos||[]).filter(n=>n.id!==id)}));
   }
-  function savePerm(n){
-    setData(d=>{
-      const list=[...(d.permanentNotes||[])];
-      const idx=list.findIndex(x=>x.id===n.id);
-      if(idx>=0) list[idx]=n; else list.push(n);
-      return {...d, permanentNotes:list};
-    });
-  }
-  function deletePerm(id){
-    setData(d=>({...d, permanentNotes:(d.permanentNotes||[]).filter(n=>n.id!==id)}));
-  }
   function savePhil(n){
     setData(d=>{
       const list=[...(d.philosophyNotes||[])];
@@ -1791,42 +1785,40 @@ function SubjectMemoSystem({data, setData}) {
     setData(d=>({...d, philosophyNotes:(d.philosophyNotes||[]).filter(n=>n.id!==id)}));
   }
 
-  const permNotes = data.permanentNotes||[];
-
   return (
     <div>
-      <TodayTrainingBar postits={postits} trainingIds={trainingIds} onMark={markPostit}/>
+      <TodayTrainingBoard notes={permNotes} trainingSlots={trainingSlots} onMark={markPerm}/>
 
-      {/* 과목 탭 (포스트잇용) */}
-      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:"1rem"}}>
-        {PS_SUBJECTS.map(s=>{
-          const c=SUBJECT_COLORS[s]||{bg:"#64748b",light:"#64748b30",text:"#cbd5e1"};
-          return (
-            <button key={s} onClick={()=>setSubject(s)} style={{
-              padding:"0.3rem 0.8rem",borderRadius:8,cursor:"pointer",
-              border:`2px solid ${subject===s?c.bg:"transparent"}`,
-              background:c.light,color:c.text,fontSize:"0.76rem",fontWeight:700
-            }}>{s}</button>
-          );
-        })}
+      {/* 영구 메모판 — 과목별 */}
+      <div style={{marginBottom:"1.4rem"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.7rem"}}>
+          <span style={{color:"#a78bfa",fontSize:"0.8rem",fontWeight:800}}>📌 영구 메모판</span>
+          <Btn small color="#a78bfa" onClick={()=>{setEditNote(null);setModal("permAdd");}}>+ 메모</Btn>
+        </div>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"0.8rem"}}>
+          {PS_SUBJECTS.map(s=>{
+            const c=SUBJECT_COLORS[s]||{bg:"#64748b",text:"#cbd5e1"};
+            return (
+              <button key={s} onClick={()=>setPermSubject(s)} style={{
+                padding:"0.28rem 0.7rem",borderRadius:7,cursor:"pointer",
+                border:`1.5px solid ${permSubject===s?c.bg:"#2a2d3a"}`,
+                background:permSubject===s?c.bg+"22":"transparent",
+                color:permSubject===s?c.text:"#6b7280",fontSize:"0.72rem",fontWeight:700
+              }}>{s}</button>
+            );
+          })}
+        </div>
+        {permSubjectNotes.length===0
+          ? <div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1.5rem 0"}}>{permSubject} 공부하다 드는 생각들을 여기 모아둬</div>
+          : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
+              {permSubjectNotes.map(n=>(
+                <PermNote key={n.id} note={n} inTraining={(trainingSlots[n.subject]||[]).includes(n.id)}
+                  onToggleTraining={toggleTraining} onEdit={n=>{setEditNote(n);setModal("permEdit");}}
+                  onDelete={deletePerm} onMark={markPerm}/>
+              ))}
+            </div>
+        }
       </div>
-
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.7rem"}}>
-        <span style={{color:"#6b7280",fontSize:"0.72rem"}}>{subject} 포스트잇 {subjectPostits.length}개</span>
-        <Btn small color="#f59e0b" onClick={()=>{setEditPostit(null);setModal("add");}}>+ 포스트잇</Btn>
-      </div>
-
-      {/* 7열 그리드 */}
-      {subjectPostits.length===0
-        ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0"}}>포스트잇이 없어</div>
-        : <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:8,marginBottom:"1.8rem"}}>
-            {subjectPostits.map(p=>(
-              <PostitNote key={p.id} postit={p} inTraining={trainingIds.includes(p.id)}
-                onToggleTraining={toggleTraining} onEdit={p=>{setEditPostit(p);setModal("edit");}}
-                onDelete={deletePostit} onMark={markPostit}/>
-            ))}
-          </div>
-      }
 
       {/* 임시 메모 — 노란색, 여러 장 */}
       <div style={{borderTop:"1px solid #1e2230",paddingTop:"1.2rem",marginBottom:"1.2rem"}}>
@@ -1840,23 +1832,6 @@ function SubjectMemoSystem({data, setData}) {
               {tempMemos.map(n=>(
                 <SimplePostit key={n.id} note={n} bg="#4a3f1e" textColor="#fde68a"
                   onEdit={n=>{setEditNote(n);setModal("tempEdit");}} onDelete={deleteTemp}/>
-              ))}
-            </div>
-        }
-      </div>
-
-      {/* 영구 메모판 — 보라색, 여러 장 */}
-      <div style={{borderTop:"1px solid #1e2230",paddingTop:"1.2rem",marginBottom:"1.2rem"}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.8rem"}}>
-          <span style={{color:"#a78bfa",fontSize:"0.8rem",fontWeight:800}}>📌 영구 메모판</span>
-          <Btn small color="#a78bfa" onClick={()=>{setEditNote(null);setModal("permAdd");}}>+ 메모</Btn>
-        </div>
-        {permNotes.length===0
-          ? <div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1.2rem 0"}}>공부하다 드는 생각들을 여기 모아둬</div>
-          : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
-              {permNotes.map(n=>(
-                <SimplePostit key={n.id} note={n} bg="#3a2e4a" textColor="#c4b5fd"
-                  onEdit={n=>{setEditNote(n);setModal("permEdit");}} onDelete={deletePerm}/>
               ))}
             </div>
         }
@@ -1892,23 +1867,18 @@ function SubjectMemoSystem({data, setData}) {
         }
       </div>
 
-      {(modal==="add"||modal==="edit")&&(
-        <PostitForm editData={modal==="edit"?editPostit:null} subject={subject}
-          onSave={p=>{savePostit(p);setModal(null);setEditPostit(null);}}
-          onClose={()=>{setModal(null);setEditPostit(null);}}/>
+      {(modal==="permAdd"||modal==="permEdit")&&(
+        <SimplePostitForm editData={modal==="permEdit"?editNote:null}
+          title={modal==="permEdit"?"영구 메모 수정":`${permSubject} 영구 메모판에 추가`}
+          placeholder="공부하다 든 생각 한 줄"
+          onSave={n=>{savePerm(n);setModal(null);setEditNote(null);}}
+          onClose={()=>{setModal(null);setEditNote(null);}}/>
       )}
       {(modal==="tempAdd"||modal==="tempEdit")&&(
         <SimplePostitForm editData={modal==="tempEdit"?editNote:null}
           title={modal==="tempEdit"?"임시 메모 수정":"임시 메모 추가"}
           placeholder="지금 드는 생각을 대충 적어둬"
           onSave={n=>{saveTemp(n);setModal(null);setEditNote(null);}}
-          onClose={()=>{setModal(null);setEditNote(null);}}/>
-      )}
-      {(modal==="permAdd"||modal==="permEdit")&&(
-        <SimplePostitForm editData={modal==="permEdit"?editNote:null}
-          title={modal==="permEdit"?"영구 메모 수정":"영구 메모판에 추가"}
-          placeholder="공부하다 든 생각 한 줄"
-          onSave={n=>{savePerm(n);setModal(null);setEditNote(null);}}
           onClose={()=>{setModal(null);setEditNote(null);}}/>
       )}
       {(modal==="philAdd"||modal==="philEdit")&&(
@@ -1921,7 +1891,6 @@ function SubjectMemoSystem({data, setData}) {
     </div>
   );
 }
-
 
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
 // ── 밤 마무리 한줄 (매일 밤 쓰는 전용 메모, 취소/수정 가능) ────────────────────────
@@ -2513,7 +2482,7 @@ export default function App() {
           Object.keys(d.timetable||{}).length===0 &&
           Object.keys(d.plans||{}).length===0 &&
           (d.wrongs||[]).length===0 &&
-          (d.postits||[]).length===0 &&
+          (d.permanentNotes||[]).length===0 &&
           (d.philosophyNotes||[]).length===0 &&
           (d.tempMemos||[]).length===0 &&
           (d.permanentNotes||[]).length===0 &&
