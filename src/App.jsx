@@ -53,7 +53,9 @@ const initialData = {
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
   postits: [],            // 포스트잇 공부법: { id, subject, text, date, status, blueCount, redCount }
   dailyTraining: {},      // 오늘의 훈련 3개: { "2024-01-01": [postitId,...] }
-  philosophyNotes: [],    // 공부 철학 노트: { id, text, date }
+  philosophyNotes: [],     // 공부 철학 노트 (과목별): { id, subject, text, date }
+  tempMemos: [],           // 임시 메모 (여러 장): { id, text, date }
+  permanentNotes: [],      // 영구 메모판 (여러 장): { id, text, date }
   nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
 };
 
@@ -1221,14 +1223,39 @@ function buildReportText(data, period) {
     lines.push(`- [${d}] ${names}`);
   });
 
-  // 공부 철학 노트
-  const philNotes = (data.philosophyNotes||[]).filter(n=>new Date(n.date)>=cutoff && new Date(n.date)<=now);
+  // 임시 메모
+  const tempNotesR = (data.tempMemos||[]).filter(n=>new Date(n.date)>=cutoff && new Date(n.date)<=now);
   lines.push("");
-  lines.push(`[공부 철학 노트] ${philNotes.length}개`);
-  if(philNotes.length===0) lines.push("- 없음");
-  else philNotes.sort((a,b)=>a.date.localeCompare(b.date)).forEach(n=>{
+  lines.push(`[임시 메모] ${tempNotesR.length}개`);
+  if(tempNotesR.length===0) lines.push("- 없음");
+  else tempNotesR.sort((a,b)=>a.date.localeCompare(b.date)).forEach(n=>{
     lines.push(`- [${n.date}] ${n.text}`);
   });
+
+  // 영구 메모판
+  const permNotesR = (data.permanentNotes||[]).filter(n=>new Date(n.date)>=cutoff && new Date(n.date)<=now);
+  lines.push("");
+  lines.push(`[영구 메모판] ${permNotesR.length}개`);
+  if(permNotesR.length===0) lines.push("- 없음");
+  else permNotesR.sort((a,b)=>a.date.localeCompare(b.date)).forEach(n=>{
+    lines.push(`- [${n.date}] ${n.text}`);
+  });
+
+  // 공부 철학 노트 (과목별)
+  const philNotesR = (data.philosophyNotes||[]).filter(n=>new Date(n.date)>=cutoff && new Date(n.date)<=now);
+  lines.push("");
+  lines.push(`[공부 철학 노트] ${philNotesR.length}개`);
+  if(philNotesR.length===0) lines.push("- 없음");
+  else {
+    const byPhilSubj={};
+    philNotesR.forEach(n=>{ const s=n.subject||"전과목"; if(!byPhilSubj[s]) byPhilSubj[s]=[]; byPhilSubj[s].push(n); });
+    Object.entries(byPhilSubj).forEach(([s,list])=>{
+      lines.push(`${s}:`);
+      list.sort((a,b)=>a.date.localeCompare(b.date)).forEach(n=>{
+        lines.push(`  - [${n.date}] ${n.text}`);
+      });
+    });
+  }
 
   // 주간/월간 목표 (목표 탭)
   const goalItems = (data.goalItems||[]).filter(g=>{
@@ -1645,14 +1672,29 @@ function TodayTrainingBar({postits, trainingIds, onMark}) {
   );
 }
 
-function PhilosophyNoteForm({onSave, onClose, editData}) {
+// 색깔만 다른 단순 포스트잇 카드 (임시메모/영구메모판/철학노트 공용)
+function SimplePostit({note, bg, textColor, onEdit, onDelete}) {
+  const rot=((note.id%7)-3)*0.6;
+  return (
+    <div style={{background:bg,border:"1px solid rgba(255,255,255,0.08)",borderRadius:4,
+      padding:"0.6rem 0.65rem",minHeight:80,boxShadow:"0 3px 8px rgba(0,0,0,0.3)",transform:`rotate(${rot}deg)`,
+      display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
+      <div style={{color:"#f1f3f9",fontSize:"0.74rem",lineHeight:1.4,whiteSpace:"pre-wrap"}}>{note.text}</div>
+      <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:6}}>
+        <button onClick={()=>onEdit(note)} style={{background:"none",border:"none",color:textColor,cursor:"pointer",fontSize:"0.64rem"}}>✎</button>
+        <button onClick={()=>onDelete(note.id)} style={{background:"none",border:"none",color:textColor,cursor:"pointer",fontSize:"0.7rem"}}>×</button>
+      </div>
+    </div>
+  );
+}
+
+function SimplePostitForm({onSave, onClose, editData, title, placeholder}) {
   const [text,setText]=useState(editData?.text||"");
   return (
-    <Modal title={editData?"철학 노트 수정":"새 철학 노트"} onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
       <div style={{marginBottom:"1.2rem"}}>
-        <Lbl>가치관 / 마음가짐 한 줄</Lbl>
         <textarea autoFocus value={text} onChange={e=>setText(e.target.value)} rows={3} style={{...inp,resize:"vertical"}}
-          placeholder="예: 재미없어도 그냥 앉아서 시작한다"/>
+          placeholder={placeholder}/>
       </div>
       <Btn full onClick={()=>{
         if(!text.trim())return;
@@ -1665,15 +1707,18 @@ function PhilosophyNoteForm({onSave, onClose, editData}) {
 
 function SubjectMemoSystem({data, setData}) {
   const [subject,setSubject]=useState("전과목");
-  const [modal,setModal]=useState(null); // "add" | "edit" | "philAdd" | "philEdit"
+  const [philSubject,setPhilSubject]=useState("전과목");
+  const [modal,setModal]=useState(null); // "add"|"edit"|"tempAdd"|"tempEdit"|"permAdd"|"permEdit"|"philAdd"|"philEdit"
   const [editPostit,setEditPostit]=useState(null);
-  const [editPhil,setEditPhil]=useState(null);
+  const [editNote,setEditNote]=useState(null);
 
   const postits = data.postits||[];
+  const tempMemos = data.tempMemos||[];
   const philNotes = data.philosophyNotes||[];
   const today = todayStr();
   const trainingIds = (data.dailyTraining||{})[today] || [];
   const subjectPostits = postits.filter(p=>p.subject===subject);
+  const philSubjectNotes = philNotes.filter(n=>n.subject===philSubject);
 
   function savePostit(p){
     setData(d=>{
@@ -1712,11 +1757,33 @@ function SubjectMemoSystem({data, setData}) {
       return {...d, postits:list};
     });
   }
+  function saveTemp(n){
+    setData(d=>{
+      const list=[...(d.tempMemos||[])];
+      const idx=list.findIndex(x=>x.id===n.id);
+      if(idx>=0) list[idx]=n; else list.push(n);
+      return {...d, tempMemos:list};
+    });
+  }
+  function deleteTemp(id){
+    setData(d=>({...d, tempMemos:(d.tempMemos||[]).filter(n=>n.id!==id)}));
+  }
+  function savePerm(n){
+    setData(d=>{
+      const list=[...(d.permanentNotes||[])];
+      const idx=list.findIndex(x=>x.id===n.id);
+      if(idx>=0) list[idx]=n; else list.push(n);
+      return {...d, permanentNotes:list};
+    });
+  }
+  function deletePerm(id){
+    setData(d=>({...d, permanentNotes:(d.permanentNotes||[]).filter(n=>n.id!==id)}));
+  }
   function savePhil(n){
     setData(d=>{
       const list=[...(d.philosophyNotes||[])];
       const idx=list.findIndex(x=>x.id===n.id);
-      if(idx>=0) list[idx]=n; else list.push(n);
+      if(idx>=0) list[idx]={...n, subject:philSubject}; else list.push({...n, subject:philSubject});
       return {...d, philosophyNotes:list};
     });
   }
@@ -1724,11 +1791,13 @@ function SubjectMemoSystem({data, setData}) {
     setData(d=>({...d, philosophyNotes:(d.philosophyNotes||[]).filter(n=>n.id!==id)}));
   }
 
+  const permNotes = data.permanentNotes||[];
+
   return (
     <div>
       <TodayTrainingBar postits={postits} trainingIds={trainingIds} onMark={markPostit}/>
 
-      {/* 과목 탭 */}
+      {/* 과목 탭 (포스트잇용) */}
       <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:"1rem"}}>
         {PS_SUBJECTS.map(s=>{
           const c=SUBJECT_COLORS[s]||{bg:"#64748b",light:"#64748b30",text:"#cbd5e1"};
@@ -1747,7 +1816,7 @@ function SubjectMemoSystem({data, setData}) {
         <Btn small color="#f59e0b" onClick={()=>{setEditPostit(null);setModal("add");}}>+ 포스트잇</Btn>
       </div>
 
-      {/* 7x4 그리드 */}
+      {/* 7열 그리드 */}
       {subjectPostits.length===0
         ? <div style={{color:"#2d3241",fontSize:"0.85rem",textAlign:"center",padding:"3rem 0"}}>포스트잇이 없어</div>
         : <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:8,marginBottom:"1.8rem"}}>
@@ -1759,29 +1828,66 @@ function SubjectMemoSystem({data, setData}) {
           </div>
       }
 
-      {/* 공부 철학 노트 */}
+      {/* 임시 메모 — 노란색, 여러 장 */}
+      <div style={{borderTop:"1px solid #1e2230",paddingTop:"1.2rem",marginBottom:"1.2rem"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.8rem"}}>
+          <span style={{color:"#fbbf24",fontSize:"0.8rem",fontWeight:800}}>📝 임시 메모</span>
+          <Btn small color="#fbbf24" onClick={()=>{setEditNote(null);setModal("tempAdd");}}>+ 메모</Btn>
+        </div>
+        {tempMemos.length===0
+          ? <div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1.2rem 0"}}>스쳐가는 생각을 대충 적어둬</div>
+          : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
+              {tempMemos.map(n=>(
+                <SimplePostit key={n.id} note={n} bg="#4a3f1e" textColor="#fde68a"
+                  onEdit={n=>{setEditNote(n);setModal("tempEdit");}} onDelete={deleteTemp}/>
+              ))}
+            </div>
+        }
+      </div>
+
+      {/* 영구 메모판 — 보라색, 여러 장 */}
+      <div style={{borderTop:"1px solid #1e2230",paddingTop:"1.2rem",marginBottom:"1.2rem"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.8rem"}}>
+          <span style={{color:"#a78bfa",fontSize:"0.8rem",fontWeight:800}}>📌 영구 메모판</span>
+          <Btn small color="#a78bfa" onClick={()=>{setEditNote(null);setModal("permAdd");}}>+ 메모</Btn>
+        </div>
+        {permNotes.length===0
+          ? <div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1.2rem 0"}}>공부하다 드는 생각들을 여기 모아둬</div>
+          : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
+              {permNotes.map(n=>(
+                <SimplePostit key={n.id} note={n} bg="#3a2e4a" textColor="#c4b5fd"
+                  onEdit={n=>{setEditNote(n);setModal("permEdit");}} onDelete={deletePerm}/>
+              ))}
+            </div>
+        }
+      </div>
+
+      {/* 공부 철학 노트 — 초록색, 과목별 */}
       <div style={{borderTop:"1px solid #1e2230",paddingTop:"1.2rem"}}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"0.8rem"}}>
-          <span style={{color:"#a78bfa",fontSize:"0.8rem",fontWeight:800}}>📔 공부 철학 노트</span>
-          <Btn small color="#a78bfa" onClick={()=>{setEditPhil(null);setModal("philAdd");}}>+ 노트</Btn>
+          <span style={{color:"#4ade80",fontSize:"0.8rem",fontWeight:800}}>📔 공부 철학 노트</span>
+          <Btn small color="#4ade80" onClick={()=>{setEditNote(null);setModal("philAdd");}}>+ 노트</Btn>
         </div>
-        {philNotes.length===0
-          ? <div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1.5rem 0"}}>가치관, 마음가짐을 짧게 적어봐</div>
+        <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"0.8rem"}}>
+          {PS_SUBJECTS.map(s=>{
+            const c=SUBJECT_COLORS[s]||{bg:"#64748b",text:"#cbd5e1"};
+            return (
+              <button key={s} onClick={()=>setPhilSubject(s)} style={{
+                padding:"0.25rem 0.65rem",borderRadius:7,cursor:"pointer",
+                border:`1.5px solid ${philSubject===s?c.bg:"#2a2d3a"}`,
+                background:philSubject===s?c.bg+"22":"transparent",
+                color:philSubject===s?c.text:"#6b7280",fontSize:"0.7rem",fontWeight:700
+              }}>{s}</button>
+            );
+          })}
+        </div>
+        {philSubjectNotes.length===0
+          ? <div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1.2rem 0"}}>{philSubject} 관련 가치관, 마음가짐을 적어봐</div>
           : <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(140px,1fr))",gap:8}}>
-              {philNotes.map(n=>{
-                const rot=((n.id%7)-3)*0.6;
-                return (
-                  <div key={n.id} style={{background:"#3a2e4a",border:"1px solid rgba(255,255,255,0.08)",borderRadius:4,
-                    padding:"0.6rem 0.65rem",minHeight:80,boxShadow:"0 3px 8px rgba(0,0,0,0.3)",transform:`rotate(${rot}deg)`,
-                    display:"flex",flexDirection:"column",justifyContent:"space-between"}}>
-                    <div style={{color:"#f1f3f9",fontSize:"0.74rem",lineHeight:1.4,whiteSpace:"pre-wrap"}}>{n.text}</div>
-                    <div style={{display:"flex",justifyContent:"flex-end",gap:6,marginTop:6}}>
-                      <button onClick={()=>{setEditPhil(n);setModal("philEdit");}} style={{background:"none",border:"none",color:"#c4b5fd",cursor:"pointer",fontSize:"0.64rem"}}>✎</button>
-                      <button onClick={()=>deletePhil(n.id)} style={{background:"none",border:"none",color:"#c4b5fd",cursor:"pointer",fontSize:"0.7rem"}}>×</button>
-                    </div>
-                  </div>
-                );
-              })}
+              {philSubjectNotes.map(n=>(
+                <SimplePostit key={n.id} note={n} bg="#1e3a2e" textColor="#86efac"
+                  onEdit={n=>{setEditNote(n);setModal("philEdit");}} onDelete={deletePhil}/>
+              ))}
             </div>
         }
       </div>
@@ -1791,10 +1897,26 @@ function SubjectMemoSystem({data, setData}) {
           onSave={p=>{savePostit(p);setModal(null);setEditPostit(null);}}
           onClose={()=>{setModal(null);setEditPostit(null);}}/>
       )}
+      {(modal==="tempAdd"||modal==="tempEdit")&&(
+        <SimplePostitForm editData={modal==="tempEdit"?editNote:null}
+          title={modal==="tempEdit"?"임시 메모 수정":"임시 메모 추가"}
+          placeholder="지금 드는 생각을 대충 적어둬"
+          onSave={n=>{saveTemp(n);setModal(null);setEditNote(null);}}
+          onClose={()=>{setModal(null);setEditNote(null);}}/>
+      )}
+      {(modal==="permAdd"||modal==="permEdit")&&(
+        <SimplePostitForm editData={modal==="permEdit"?editNote:null}
+          title={modal==="permEdit"?"영구 메모 수정":"영구 메모판에 추가"}
+          placeholder="공부하다 든 생각 한 줄"
+          onSave={n=>{savePerm(n);setModal(null);setEditNote(null);}}
+          onClose={()=>{setModal(null);setEditNote(null);}}/>
+      )}
       {(modal==="philAdd"||modal==="philEdit")&&(
-        <PhilosophyNoteForm editData={modal==="philEdit"?editPhil:null}
-          onSave={n=>{savePhil(n);setModal(null);setEditPhil(null);}}
-          onClose={()=>{setModal(null);setEditPhil(null);}}/>
+        <SimplePostitForm editData={modal==="philEdit"?editNote:null}
+          title={modal==="philEdit"?"철학 노트 수정":`${philSubject} 철학 노트 추가`}
+          placeholder="예: 재미없어도 그냥 앉아서 시작한다"
+          onSave={n=>{savePhil(n);setModal(null);setEditNote(null);}}
+          onClose={()=>{setModal(null);setEditNote(null);}}/>
       )}
     </div>
   );
@@ -2393,6 +2515,8 @@ export default function App() {
           (d.wrongs||[]).length===0 &&
           (d.postits||[]).length===0 &&
           (d.philosophyNotes||[]).length===0 &&
+          (d.tempMemos||[]).length===0 &&
+          (d.permanentNotes||[]).length===0 &&
           (d.plans2||[]).length===0 &&
           (d.goalItems||[]).length===0 &&
           Object.keys(d.nightNotes||{}).length===0 &&
