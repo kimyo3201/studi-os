@@ -1614,9 +1614,10 @@ function PermNote({note, inTraining, onToggleTraining, onEdit, onDelete, onMark}
       <div style={{color:"#f1f3f9",fontSize:"0.73rem",lineHeight:1.4,whiteSpace:"pre-wrap",wordBreak:"break-word"}}>{note.text}</div>
       <div>
         {inTraining && (
-          <div style={{display:"flex",gap:2,marginBottom:4}}>
-            {Array.from({length:note.blueCount||0}).map((_,i)=><span key={"b"+i} style={{fontSize:"0.58rem"}}>🔵</span>)}
-            {Array.from({length:note.redCount||0}).map((_,i)=><span key={"r"+i} style={{fontSize:"0.58rem"}}>🔴</span>)}
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4,flexWrap:"wrap"}}>
+            <span style={{fontSize:"0.62rem",color:"#93c5fd"}}>🔵×{note.blueCount||0}</span>
+            <span style={{fontSize:"0.62rem",color:"#fca5a5"}}>🔴×{note.redCount||0}</span>
+            {(note.streak||0)>0 && <span style={{fontSize:"0.6rem",color:"#fbbf24"}}>연속{note.streak}</span>}
           </div>
         )}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
@@ -1725,7 +1726,7 @@ function SubjectMemoSystem({data, setData}) {
       const list=[...(d.permanentNotes||[])];
       const idx=list.findIndex(x=>x.id===n.id);
       if(idx>=0) list[idx]={...list[idx], ...n, subject:permSubject};
-      else list.push({...n, subject:permSubject, status:"training", blueCount:0, redCount:0});
+      else list.push({...n, subject:permSubject, status:"training", blueCount:0, redCount:0, streak:0});
       return {...d, permanentNotes:list};
     });
   }
@@ -1756,8 +1757,10 @@ function SubjectMemoSystem({data, setData}) {
         if(n.id!==id) return n;
         const blueCount = color==="blue" ? (n.blueCount||0)+1 : n.blueCount||0;
         const redCount = color==="red" ? (n.redCount||0)+1 : n.redCount||0;
-        const status = blueCount>=2 ? "learned" : "training";
-        return {...n, blueCount, redCount, status};
+        // 연속 파랑 횟수: 빨강이 나오면 0으로 리셋, 파랑이면 +1
+        const streak = color==="blue" ? (n.streak||0)+1 : 0;
+        const status = streak>=2 ? "learned" : "training";
+        return {...n, blueCount, redCount, streak, status};
       });
       return {...d, permanentNotes:list};
     });
