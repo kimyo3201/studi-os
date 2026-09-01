@@ -3,6 +3,15 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학","기타"];
 
+// 계획 실패 사유 코드 — "실패" 뒤에 숨은 진짜 원인을 분리해서 보기 위함
+const FAIL_REASONS = {
+  TIME:       { label:"시간 부족", desc:"계획 자체가 과다했음", color:"#f59e0b" },
+  FATIGUE:    { label:"체력/집중력 소진", desc:"피곤해서 못함", color:"#ef4444" },
+  DIFFICULTY: { label:"예상보다 어려움", desc:"난이도 오판", color:"#a855f7" },
+  AVOID:      { label:"회피", desc:"하기 싫어서 미룸", color:"#dc2626" },
+  SKIP:       { label:"그냥 안 함", desc:"특별한 이유 없음", color:"#6b7280" },
+};
+
 const SUBJECT_COLORS = {
   "전과목 공통": { bg:"#818cf8", light:"#818cf830", text:"#c7d2fe" }, // 인디고
   수학:   { bg:"#eab308", light:"#eab30830", text:"#fde047" }, // 노랑
@@ -278,7 +287,8 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
       </div>
       <Btn full onClick={()=>{
         if(!content.trim())return;
-        onSave({id:editData?.id||Date.now(),date,subject,content,status:"todo"});
+        const id=editData?.id||Date.now();
+        onSave({id,date,subject,content,status:"todo",rootId:editData?.rootId||id});
         onClose();
       }}>저장</Btn>
     </Modal>
@@ -286,7 +296,28 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
 }
 
 // ── 계획 완료 체크 모달 (완료 누르면 반드시 거쳐야 함) ─────────────────────────────
+// 계획 실패 시 사유 선택 (실패 뒤에 숨은 진짜 원인 분리)
+function FailReasonModal({onSelect, onClose}) {
+  return (
+    <Modal title="❌ 왜 실패했어?" onClose={onClose}>
+      <div style={{display:"flex",flexDirection:"column",gap:8}}>
+        {Object.entries(FAIL_REASONS).map(([code,r])=>(
+          <button key={code} onClick={()=>onSelect(code)} style={{
+            display:"flex",flexDirection:"column",alignItems:"flex-start",gap:2,
+            padding:"0.7rem 0.9rem",borderRadius:9,cursor:"pointer",textAlign:"left",
+            border:`1px solid ${r.color}40`,background:`${r.color}12`
+          }}>
+            <span style={{color:r.color,fontWeight:700,fontSize:"0.85rem"}}>{r.label}</span>
+            <span style={{color:"#6b7280",fontSize:"0.72rem"}}>{r.desc}</span>
+          </button>
+        ))}
+      </div>
+    </Modal>
+  );
+}
+
 function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStopTimer}) {
+  const [failModalOpen,setFailModalOpen]=useState(false);
   const c=SUBJECT_COLORS[plan.subject];
   const statusStyle = {
     todo:  {bg:"#1e2230", color:"#6b7280", label:"예정"},
@@ -294,6 +325,7 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
     failed:{bg:"#ef444420", color:"#ef4444", label:"❌ 실패"},
   }[plan.status]||{bg:"#1e2230",color:"#6b7280",label:"예정"};
   const isRunning = activeTimer && activeTimer.planId===plan.id;
+  const failReason = plan.failReason ? FAIL_REASONS[plan.failReason] : null;
 
   return (
     <div style={{background:"#0a0c12",border:`1px solid ${isRunning?(c?.bg||"#6366f1"):plan.status==="done"?"#22c55e30":plan.status==="failed"?"#ef444430":"#1e2230"}`,
@@ -302,6 +334,9 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
         <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
           <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem"}}>{plan.subject}</span>
           <span style={{background:statusStyle.bg,color:statusStyle.color,fontSize:"0.7rem",padding:"0.12rem 0.5rem",borderRadius:99,fontWeight:700}}>{statusStyle.label}</span>
+          {failReason&&(
+            <span style={{background:`${failReason.color}20`,color:failReason.color,fontSize:"0.66rem",padding:"0.1rem 0.45rem",borderRadius:99,fontWeight:700}}>{failReason.label}</span>
+          )}
           {plan.totalMinutes>0&&(
             <span style={{color:"#f59e0b",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>
               ⏱ {Math.floor(plan.totalMinutes/60)>0?`${Math.floor(plan.totalMinutes/60)}h `:""}{plan.totalMinutes%60}m
@@ -338,11 +373,18 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
       {plan.status==="todo"&&(
         <div style={{display:"flex",gap:6}}>
           <button onClick={()=>onStatus(plan.id,"done")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button>
-          <button onClick={()=>onStatus(plan.id,"failed")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button>
+          <button onClick={()=>setFailModalOpen(true)} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button>
         </div>
       )}
       {plan.status==="failed"&&(
         <div style={{color:"#ef4444",fontSize:"0.7rem"}}>→ {nextDay(plan.date)}로 이동됨</div>
+      )}
+
+      {failModalOpen&&(
+        <FailReasonModal
+          onSelect={code=>{ onStatus(plan.id,"failed",code); setFailModalOpen(false); }}
+          onClose={()=>setFailModalOpen(false)}
+        />
       )}
     </div>
   );
@@ -1142,6 +1184,9 @@ function buildReportText(data, period) {
   const planDone=plans.filter(p=>p.status==="done").length;
   const planFailed=plans.filter(p=>p.status==="failed").length;
   const planTodo=plans.filter(p=>p.status==="todo").length;
+  // 이월(실패 반복)로 같은 계획이 여러 항목으로 쪼개져도 rootId 기준으로 중복 없이 세기
+  const uniqueRootIds = new Set(plans.map(p=>p.rootId||p.id));
+  const uniquePlanCount = uniqueRootIds.size;
 
   const lines=[];
   lines.push(`=== STUDY_OS 리포트 : 최근 ${pLabel} ===`);
@@ -1187,8 +1232,25 @@ function buildReportText(data, period) {
   });
   lines.push("");
   lines.push(`[계획 수행 현황]`);
-  lines.push(`총 계획: ${plans.length}개 | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개`);
-  if(plans.length>0) lines.push(`달성률: ${Math.round((planDone/plans.length)*100)}%`);
+  lines.push(`고유 계획: ${uniquePlanCount}개 (이월 포함 총 시도 ${plans.length}회) | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개`);
+  if(uniquePlanCount>0) lines.push(`달성률: ${Math.round((planDone/uniquePlanCount)*100)}% (고유 계획 기준)`);
+
+  // 실패 사유별 집계 — "실패"라는 숫자 뒤에 숨은 진짜 원인 분리
+  const failedPlans = plans.filter(p=>p.status==="failed");
+  if(failedPlans.length>0){
+    lines.push("");
+    lines.push(`[실패 사유 분석] 총 ${failedPlans.length}개`);
+    const byReason={};
+    failedPlans.forEach(p=>{ const r=p.failReason||"미분류"; if(!byReason[r]) byReason[r]=[]; byReason[r].push(p); });
+    Object.entries(byReason).sort((a,b)=>b[1].length-a[1].length).forEach(([code,list])=>{
+      const label = FAIL_REASONS[code]?.label || code;
+      lines.push(`${label}: ${list.length}개 (${Math.round((list.length/failedPlans.length)*100)}%)`);
+      list.slice(0,5).forEach(p=>{
+        lines.push(`  - [${p.date}|${p.subject}] ${p.content.slice(0,30)}`);
+      });
+    });
+  }
+
   const trackedPlans = plans.filter(p=>p.totalMinutes>0);
   if(trackedPlans.length>0){
     const totalTrackedMin = trackedPlans.reduce((a,p)=>a+p.totalMinutes,0);
@@ -1984,16 +2046,22 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
       return {...d,plans2:list};});
   }
   function deletePlan(id){setData(d=>({...d,plans2:(d.plans2||[]).filter(p=>p.id!==id)}));}
-  function setStatus(id,status){
+  function setStatus(id,status,failReason){
     setData(d=>{
       const list=[...(d.plans2||[])];
       const idx=list.findIndex(x=>x.id===id);if(idx<0)return d;
       const plan={...list[idx],status};
+      if(status==="failed"&&failReason) plan.failReason=failReason;
       list[idx]=plan;
       if(status==="failed"){
         const tom=nextDay(plan.date);
-        if(!list.some(p=>p.id===plan.id+"_m_"+tom))
-          list.push({...plan,id:plan.id+"_m_"+tom,date:tom,status:"todo",note:"[이월] "+plan.content.slice(0,30)});
+        if(!list.some(p=>p.id===plan.id+"_m_"+tom)){
+          // 이월본은 "내일 다시 할 계획"일 뿐, 오늘 이미 기록된 공부시간·실패사유까지 복사하면 안 됨
+          // rootId는 최초 원본을 계속 이어받아서, 며칠 연속 실패해도 "같은 계획의 반복 시도"로 추적 가능
+          const { totalMinutes, sessions, failReason:_fr, ...rest } = plan;
+          const rootId = plan.rootId || plan.id;
+          list.push({...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",rootId,note:"[이월] "+plan.content.slice(0,30)});
+        }
       }
       return {...d,plans2:list};});
   }
@@ -2148,17 +2216,21 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
             for(const p of monthPlans){bySubj[p.subject]=(bySubj[p.subject]||0)+1;}
             const done=monthPlans.filter(p=>p.status==="done").length;
             const failed=monthPlans.filter(p=>p.status==="failed").length;
-            const rate=monthPlans.length>0?Math.round((done/monthPlans.length)*100):0;
+            const uniqueCount=new Set(monthPlans.map(p=>p.rootId||p.id)).size;
+            const rate=uniqueCount>0?Math.round((done/uniqueCount)*100):0;
             return (
               <div>
                 <div style={{display:"flex",gap:14,flexWrap:"wrap",marginBottom:"1rem",background:"#0a0c12",border:"1px solid #1e2230",borderRadius:10,padding:"0.8rem"}}>
-                  {[["총",monthPlans.length,"#6b7280"],["완료",done,"#22c55e"],["실패",failed,"#ef4444"],["달성률",rate+"%","#f59e0b"]].map(([l,v,c])=>(
+                  {[["고유 계획",uniqueCount,"#6b7280"],["완료",done,"#22c55e"],["실패",failed,"#ef4444"],["달성률",rate+"%","#f59e0b"]].map(([l,v,c])=>(
                     <div key={l} style={{textAlign:"center"}}>
                       <div style={{color:c,fontSize:"1.1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace"}}>{v}</div>
                       <div style={{color:"#4b5563",fontSize:"0.62rem"}}>{l}</div>
                     </div>
                   ))}
                 </div>
+                {monthPlans.length!==uniqueCount&&(
+                  <div style={{color:"#4b5563",fontSize:"0.66rem",marginBottom:"0.8rem"}}>(이월 포함 총 시도 {monthPlans.length}회)</div>
+                )}
                 <div style={{color:"#4b5563",fontSize:"0.7rem",marginBottom:8}}>과목별 계획 수</div>
                 {Object.entries(bySubj).sort((a,b)=>b[1]-a[1]).map(([s,cnt])=>(
                   <div key={s} style={{display:"flex",justifyContent:"space-between",padding:"0.4rem 0",borderBottom:"1px solid #111318"}}>
@@ -2373,6 +2445,7 @@ export default function App() {
   const [syncStatus,setSyncStatus]=useState("idle"); // idle | syncing | synced | error
   const cloudTimerRef = useRef(null);
   const initialSyncDone = useRef(false);
+  const skipNextSaveRef = useRef(false); // 초기 동기화용 setData 직후 한 번은 타임스탬프 재기록을 건너뜀
 
   // ── 계획 실행 타이머 (전역: 탭 이동/새로고침/백그라운드에도 유지) ────────────────
   const TIMER_KEY = "studyos_active_timer";
@@ -2517,13 +2590,16 @@ export default function App() {
       if (!cloudIsEmpty && localIsEmpty) {
         // 로컬은 비었는데 클라우드엔 실제 데이터가 있음 → 무조건 클라우드 채택
         // (다른 기기에서 처음 여는 경우가 정확히 이 케이스)
+        skipNextSaveRef.current = true;
         setData(cloudData);
       } else if (!cloudIsEmpty && cloudTime > localTime) {
         // 둘 다 데이터가 있고 클라우드가 더 최신 → 클라우드 채택
+        skipNextSaveRef.current = true;
         setData(cloudData);
       } else {
         // 로컬이 더 최신이거나, 로컬에만 데이터가 있거나, 둘 다 비어있음 → 로컬 유지 + 사진 복원
         const merged = restorePhotos(localData, cloudData);
+        skipNextSaveRef.current = true;
         setData(merged);
         if (!localIsEmpty) {
           const ok = await cloudSave({ ...merged, _syncedAt: Date.now() });
@@ -2538,6 +2614,10 @@ export default function App() {
   // 로컬 저장은 즉시, 클라우드 저장은 1초 디바운스로 (너무 잦은 요청 방지)
   useEffect(()=>{
     save(data);
+    // 초기 동기화 과정에서 발생한 setData는 "사용자가 방금 수정한 것"이 아니므로
+    // 타임스탬프를 다시 찍어 클라우드에 재업로드하면 안 됨 — 그러면 단순히 앱을 연 것만으로도
+    // "마지막으로 연 기기"가 실제 최신 여부와 무관하게 항상 동기화 우선권을 갖게 되는 버그가 생김.
+    if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return; }
     if (!initialSyncDone.current) return; // 초기 로드 직후 자기 자신 덮어쓰기 방지
     if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
     setSyncStatus("syncing");
