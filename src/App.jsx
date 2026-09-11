@@ -1154,13 +1154,27 @@ function PracticeMode({queue, onExit, onResult}) {
   const [showAnswer,setShowAnswer]=useState(false);
   const [results,setResults]=useState({correct:0, wrong:0});
   const [canvasKey,setCanvasKey]=useState(0);
+  const [successStreak,setSuccessStreak]=useState(0);
 
   const current = queue[idx];
   const isLast = idx>=queue.length-1;
+  const currentStreak = current?.correctStreak||0;
 
   function mark(result){ // "correct" | "wrong"
-    onResult(current, result);
+    const nextStreak = result==="correct" ? successStreak+1 : 0;
+    onResult(current, result, nextStreak>=2);
     setResults(r=>({...r, [result]: r[result]+1}));
+
+    // 오답은 같은 문제를 다시 풀고, 맞아도 1회째라면 같은 문제를 한 번 더 연속으로 맞혀야 함.
+    if(result!=="correct" || nextStreak<2){
+      setSuccessStreak(result==="correct" ? nextStreak : 0);
+      setShowAnswer(false);
+      setCanvasKey(k=>k+1);
+      return;
+    }
+
+    // 2회 연속 성공 → 다음 문제로 이동
+    setSuccessStreak(0);
     if(!isLast){
       setIdx(i=>i+1);
       setShowAnswer(false);
@@ -2443,16 +2457,18 @@ export default function App() {
   const delWrong=id=>setData(d=>({...d,wrongs:d.wrongs.filter(e=>e.id!==id)}));
   const renameFolder=(key,name)=>setData(d=>({...d,folderNames:{...(d.folderNames||{}),[key]:name}}));
 
-  function handlePracticeResult(entry, result) {
+  function handlePracticeResult(entry, result, solved) {
     setData(d=>({
       ...d,
       wrongs: d.wrongs.map(w=>{
         if(w.id!==entry.id) return w;
+        const streak = result==="correct" ? (w.correctStreak||0)+1 : 0;
         return {
           ...w,
           attemptCount: (w.attemptCount||0)+1,
           failCount: result==="wrong" ? (w.failCount||0)+1 : (w.failCount||0),
-          solved: result==="correct" ? true : w.solved,
+          correctStreak: streak,
+          solved: solved ? true : w.solved,
           lastPracticed: todayStr(),
         };
       })
