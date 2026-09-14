@@ -2682,7 +2682,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
               ))}
             </div>
             {planView==="day"&&<div style={{display:"flex",gap:5}}>
-              {batchEligiblePlans.length>0&&<Btn small outline color="#f59e0b" onClick={()=>setBatchReviewOpen(true)}>🧹 일괄 정리</Btn>}
+              <Btn small outline color="#f59e0b" disabled={batchEligiblePlans.length===0} onClick={()=>setBatchReviewOpen(true)}>🧹 일괄 정리 ({batchEligiblePlans.length})</Btn>
               <Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 계획 추가</Btn>
             </div>}
           </div>
