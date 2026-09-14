@@ -45,7 +45,8 @@ const ERROR_MAJOR_LABEL = {
   XM: { label:"XM — 정독·검토", desc:"정독 누락 / 참거짓 체크 / 검토 누락", color:"#3b82f6" },
   XJ: { label:"XJ — 적용", desc:"개념은 알지만 적용을 못함", color:"#10b981" },
 };
-const STORAGE_KEY = "studyos_v5";
+const STORAGE_KEY = "studyos_v6";
+const LEGACY_STORAGE_KEY = "studyos_v5";
 const SLOT_H = 22; // px per 10min slot
 const SLOTS_PER_HOUR = 6;
 const START_HOUR = 6;
@@ -78,29 +79,40 @@ function getMonthKey(dateStr) {
   return dateStr.slice(0,7); // "2024-01"
 }
 
-function loadFallback() {
+function loadCurrentFallback() {
   try {
     const r = localStorage.getItem(STORAGE_KEY);
-    return r ? JSON.parse(r) : initialData;
-  } catch {
-    return initialData;
-  }
+    return r ? JSON.parse(r) : null;
+  } catch { return null; }
+}
+function loadLegacyFallback() {
+  try {
+    const r = localStorage.getItem(LEGACY_STORAGE_KEY);
+    return r ? JSON.parse(r) : null;
+  } catch { return null; }
+}
+function loadFallback() {
+  return loadCurrentFallback() || loadLegacyFallback() || initialData;
 }
 
-// ── 동기화 v2: "전체 JSON 덮어쓰기"를 버리고 항목별 버전 + 삭제 tombstone으로 병합 ──
-// 핵심 원칙
-// 1) 로컬 원본은 IndexedDB에 사진까지 포함해 보관한다.
-// 2) 모든 사용자 수정은 항목별 고유 버전을 받는다.
-// 3) 삭제도 tombstone으로 기록해 오래된 기기가 삭제 항목을 되살리지 못하게 한다.
-// 4) Supabase 저장은 updated_at을 이용한 CAS(낙관적 잠금)로만 수행한다.
-// 5) 충돌 시 서버를 다시 읽고 항목별로 병합한 뒤 재시도한다.
-const SYNC_SCHEMA = 2;
-const IDB_NAME = "studyos_v2";
+// ── 동기화 v3: 오프라인 우선 + 항목/슬롯 단위 병합 + 삭제 tombstone + CAS ────────
+// 설계 목표
+// 1) 화면 데이터 구조는 그대로 유지한다. 기존 UI/리포트/계획/오답 기능을 건드리지 않는다.
+// 2) 로컬 원본은 IndexedDB(사진 포함), localStorage는 즉시 복구 가능한 경량 fallback이다.
+// 3) 배열형 데이터는 항목 id 단위, 일반 map은 key 단위, timetable은 10분 slot 단위로 버전 관리한다.
+// 4) 삭제는 tombstone으로 남겨 오래된 탭/기기가 삭제 항목을 되살리지 못하게 한다.
+// 5) 클라우드 저장은 updated_at CAS(낙관적 잠금)만 사용한다. 충돌 시 재조회→병합→재시도한다.
+// 6) 네트워크 복귀 시 현재 메모리를 바로 업로드하지 않고 반드시 서버 최신본과 먼저 병합한다.
+const SYNC_SCHEMA = 3;
+// v3는 새 IndexedDB를 사용하고, 최초 1회만 v2 IndexedDB를 읽어 마이그레이션한다.
+const IDB_NAME = "studyos_v3";
+const LEGACY_IDB_NAME = "studyos_v2";
 const IDB_STORE = "state";
 const IDB_KEY = "main";
 const CLIENT_ID_KEY = "studyos_client_id_v2";
 const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems"];
-const MAP_ENTITY_FIELDS = ["timetable", "plans", "folderNames", "weekGoals", "monthGoals", "nightNotes"];
+const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes"];
+const TIMETABLE_FIELD = "timetable";
 
 function makeRandomId() {
   try { return crypto.randomUUID(); }
@@ -117,7 +129,7 @@ function getClientId() {
   } catch { return makeRandomId(); }
 }
 const CLIENT_ID = getClientId();
-const SESSION_ID = makeRandomId(); // 탭마다 다름 → 같은 ms에 저장해도 버전 충돌 방지
+const SESSION_ID = makeRandomId();
 let lastVersionMs = 0;
 let versionCounter = 0;
 
@@ -135,8 +147,13 @@ function cmpVersion(a="", b="") {
   if (a === b) return 0;
   return a > b ? 1 : -1;
 }
-function maxVersion(a="", b="") { return cmpVersion(a,b) >= 0 ? a : b; }
+function maxVersion(...values) {
+  return values.reduce((best,v)=>cmpVersion(v||"",best||"")>0?(v||""):best, "");
+}
 function entityKey(field, id) { return `${field}:${String(id)}`; }
+function timetableSlotKey(date, slot) { return `timetable:${date}:${String(slot)}`; }
+function timetableDayDeleteKey(date) { return `timetable-day:${date}`; }
+function hasOwn(obj,key){ return Object.prototype.hasOwnProperty.call(obj||{},key); }
 
 function normalizeDataShape(d) {
   const src = d && typeof d === "object" ? d : {};
@@ -154,10 +171,10 @@ function normalizeDataShape(d) {
     plans2: Array.isArray(src.plans2) ? src.plans2 : [],
   };
 }
-function isSyncV2(d) { return d?._sync?.schema === SYNC_SCHEMA; }
+function syncSchemaOf(d){ return Number(d?._sync?.schema)||0; }
+function isSyncCurrent(d) { return syncSchemaOf(d) === SYNC_SCHEMA; }
 function itemId(item, index, field) {
   if (item && item.id !== undefined && item.id !== null) return String(item.id);
-  // 예전 데이터에 id가 없더라도 동일 스냅샷에서는 결정적으로 같은 id가 나오게 함.
   let text = "";
   try { text = JSON.stringify(item); } catch { text = String(item); }
   let h = 2166136261;
@@ -167,7 +184,7 @@ function itemId(item, index, field) {
 function isEffectivelyEmpty(d) {
   if (!d) return true;
   return (
-    Object.keys(d.timetable||{}).length===0 &&
+    Object.keys(d.timetable||{}).every(date=>Object.keys(d.timetable?.[date]||{}).length===0) &&
     Object.keys(d.plans||{}).length===0 &&
     (d.wrongs||[]).length===0 &&
     (d.plans2||[]).length===0 &&
@@ -179,9 +196,10 @@ function isEffectivelyEmpty(d) {
   );
 }
 
+// v1/v2/구버전 데이터를 v3 메타데이터로 감싼다. 사용자 데이터 값 자체는 바꾸지 않는다.
 function ensureSyncMeta(raw, source="local") {
   const d = normalizeDataShape(raw);
-  if (isSyncV2(d)) {
+  if (isSyncCurrent(d)) {
     return {
       ...d,
       _sync: {
@@ -194,21 +212,53 @@ function ensureSyncMeta(raw, source="local") {
     };
   }
 
-  const baseMs = Number(d._syncedAt)||0;
-  const v = legacyVersion(baseMs, source);
+  const oldSync = d._sync && typeof d._sync === "object" ? d._sync : {};
+  const oldEntries = oldSync.entries || {};
+  const oldTombstones = oldSync.tombstones || {};
+  const baseMs = Number(oldSync.lastChangeAt)||Number(d._syncedAt)||0;
+  const fallbackVersion = legacyVersion(baseMs, source);
   const entries = {};
+  const tombstones = {};
+
   for (const field of ARRAY_ENTITY_FIELDS) {
-    (d[field]||[]).forEach((item,i)=>{ entries[entityKey(field,itemId(item,i,field))] = v; });
+    (d[field]||[]).forEach((item,i)=>{
+      const id=itemId(item,i,field);
+      const key=entityKey(field,id);
+      entries[key]=oldEntries[key]||fallbackVersion;
+    });
+    const prefix=`${field}:`;
+    for(const [key,v] of Object.entries(oldTombstones)) if(key.startsWith(prefix)) tombstones[key]=v||fallbackVersion;
   }
+
   for (const field of MAP_ENTITY_FIELDS) {
-    Object.keys(d[field]||{}).forEach(k=>{ entries[entityKey(field,k)] = v; });
+    Object.keys(d[field]||{}).forEach(id=>{
+      const key=entityKey(field,id);
+      entries[key]=oldEntries[key]||fallbackVersion;
+    });
+    const prefix=`${field}:`;
+    for(const [key,v] of Object.entries(oldTombstones)) if(key.startsWith(prefix)) tombstones[key]=v||fallbackVersion;
   }
+
+  // v2는 timetable을 날짜 전체 단위로 버전 관리했다. 그 버전을 각 slot에 그대로 펼쳐서 무손실 마이그레이션.
+  for(const [date,slots] of Object.entries(d.timetable||{})){
+    const oldDayKey=`timetable:${date}`;
+    const dayVersion=oldEntries[oldDayKey]||fallbackVersion;
+    for(const slot of Object.keys(slots||{})) entries[timetableSlotKey(date,slot)]=dayVersion;
+  }
+  for(const [key,v] of Object.entries(oldTombstones)){
+    if(!key.startsWith("timetable:")) continue;
+    const rest=key.slice("timetable:".length);
+    // v2 tombstone은 date 하나만 있었다. v3에서는 날짜 전체 삭제 tombstone으로 승격한다.
+    if(/^\d{4}-\d{2}-\d{2}$/.test(rest)) tombstones[timetableDayDeleteKey(rest)]=v||fallbackVersion;
+    else tombstones[key]=v||fallbackVersion;
+  }
+
   return {
     ...d,
     _sync: {
       schema: SYNC_SCHEMA,
       entries,
-      tombstones: {},
+      tombstones,
       lastChangeAt: baseMs,
       migratedFromLegacy: true,
     },
@@ -236,8 +286,7 @@ function stableStringify(value) {
 }
 function sameSnapshot(a,b) { return stableStringify(a) === stableStringify(b); }
 
-// 모든 setData를 이 함수가 통과한다. 바뀐 항목만 새 버전을 받고,
-// 삭제된 항목은 tombstone을 남긴다. 따라서 오래된 스냅샷이 다시 와도 부활하지 않는다.
+// 모든 UI setData는 이 함수 하나를 통과한다. 화면 데이터 구조는 바꾸지 않고 메타데이터만 추가한다.
 function stampLocalChanges(prevRaw, nextRaw) {
   const prev = ensureSyncMeta(prevRaw, "local");
   const next = normalizeDataShape(nextRaw);
@@ -279,18 +328,36 @@ function stampLocalChanges(prevRaw, nextRaw) {
     const keys = new Set([...Object.keys(pMap), ...Object.keys(nMap)]);
     keys.forEach(id=>{
       const key = entityKey(field,id);
-      const hasP = Object.prototype.hasOwnProperty.call(pMap,id);
-      const hasN = Object.prototype.hasOwnProperty.call(nMap,id);
+      const hasP = hasOwn(pMap,id), hasN = hasOwn(nMap,id);
       if (hasP && !hasN) markDeleted(key);
       else if (!hasP && hasN) markPresent(key);
       else if (hasP && hasN && !sameValue(pMap[id],nMap[id])) markPresent(key);
     });
   }
 
-  // UI state만 똑같이 다시 setData한 경우에는 새 버전을 만들지 않는다.
+  // timetable은 날짜가 아니라 10분 slot 하나가 충돌 단위다.
+  const pTT=prev.timetable||{}, nTT=next.timetable||{};
+  const dates=new Set([...Object.keys(pTT),...Object.keys(nTT)]);
+  dates.forEach(date=>{
+    const hadDay=hasOwn(pTT,date), hasDay=hasOwn(nTT,date);
+    const pDay=pTT[date]||{}, nDay=nTT[date]||{};
+    if(hadDay && !hasDay) {
+      // '날짜 전체 초기화'는 원격의 오래된 미확인 slot까지 되살아나지 않도록 day tombstone도 남긴다.
+      markDeleted(timetableDayDeleteKey(date));
+    }
+    const slots=new Set([...Object.keys(pDay),...Object.keys(nDay)]);
+    slots.forEach(slot=>{
+      const key=timetableSlotKey(date,slot);
+      const hasP=hasOwn(pDay,slot), hasN=hasOwn(nDay,slot);
+      if(hasP && !hasN) markDeleted(key);
+      else if(!hasP && hasN) markPresent(key);
+      else if(hasP && hasN && !sameValue(pDay[slot],nDay[slot])) markPresent(key);
+    });
+  });
+
   if (!changed) return {
     ...next,
-    _sync: {...prev._sync, entries, tombstones},
+    _sync: {...prev._sync, entries, tombstones, schema:SYNC_SCHEMA},
     _syncedAt: prev._syncedAt||0,
   };
 
@@ -303,7 +370,6 @@ function stampLocalChanges(prevRaw, nextRaw) {
       lastChangeAt,
       migratedFromLegacy: false,
     },
-    // 구버전과의 호환용. v2 동기화의 우선순위 판단에는 사용하지 않는다.
     _syncedAt: lastChangeAt,
   };
 }
@@ -321,9 +387,22 @@ function collectMetaIds(sync, field) {
   for (const k of Object.keys(sync.tombstones||{})) if(k.startsWith(prefix)) ids.push(k.slice(prefix.length));
   return ids;
 }
+function collectTimetableSlotIds(d){
+  const ids=[];
+  for(const [date,slots] of Object.entries(d.timetable||{})){
+    for(const slot of Object.keys(slots||{})) ids.push(`${date}:${slot}`);
+  }
+  const prefix="timetable:";
+  for(const k of Object.keys(d._sync?.entries||{})) if(k.startsWith(prefix)) ids.push(k.slice(prefix.length));
+  for(const k of Object.keys(d._sync?.tombstones||{})) if(k.startsWith(prefix)) ids.push(k.slice(prefix.length));
+  return ids;
+}
+function splitTimetableSlotId(id){
+  const m=String(id).match(/^(\d{4}-\d{2}-\d{2}):(.*)$/);
+  return m ? {date:m[1],slot:m[2]} : null;
+}
 
-// v2끼리는 "최신 스냅샷 하나 선택"이 아니라 항목별로 병합한다.
-// 서로 다른 항목을 두 기기/두 탭에서 동시에 추가해도 둘 다 살아남는다.
+// 최신 스냅샷 하나를 고르는 대신 각 엔티티/slot을 독립적으로 병합한다.
 function mergeSyncData(aRaw,bRaw) {
   const a=ensureSyncMeta(aRaw,"local"), b=ensureSyncMeta(bRaw,"cloud");
   const out=normalizeDataShape(a);
@@ -344,7 +423,7 @@ function mergeSyncData(aRaw,bRaw) {
       const ev=maxVersion(ae,be), tv=maxVersion(at,bt);
       if(ev) entries[key]=ev;
       if(tv) tombstones[key]=tv;
-      if(tv && cmpVersion(tv,ev)>=0) return; // 삭제가 더 최신 → 절대 부활시키지 않음
+      if(tv && cmpVersion(tv,ev)>=0) return;
 
       let chosen=null;
       if(cmpVersion(ae,be)>0) chosen=A.map.get(id)||B.map.get(id)||null;
@@ -352,7 +431,7 @@ function mergeSyncData(aRaw,bRaw) {
       else {
         const av=A.map.get(id), bv=B.map.get(id);
         if(av && bv && field==="wrongs") {
-          // localStorage 백업본은 사진을 빼므로 같은 버전이면 사진은 있는 쪽에서 복원
+          // localStorage fallback은 사진을 빼므로 같은 버전이면 사진이 있는 쪽을 우선 복원한다.
           chosen={...bv,...av};
           if(!chosen.photo && bv.photo) chosen.photo=bv.photo;
         } else chosen=av||bv||null;
@@ -378,26 +457,75 @@ function mergeSyncData(aRaw,bRaw) {
       if(tv) tombstones[key]=tv;
       if(tv && cmpVersion(tv,ev)>=0) return;
       if(cmpVersion(ae,be)>0) {
-        if(Object.prototype.hasOwnProperty.call(A,id)) result[id]=A[id];
-        else if(Object.prototype.hasOwnProperty.call(B,id)) result[id]=B[id];
+        if(hasOwn(A,id)) result[id]=A[id]; else if(hasOwn(B,id)) result[id]=B[id];
       } else if(cmpVersion(be,ae)>0) {
-        if(Object.prototype.hasOwnProperty.call(B,id)) result[id]=B[id];
-        else if(Object.prototype.hasOwnProperty.call(A,id)) result[id]=A[id];
+        if(hasOwn(B,id)) result[id]=B[id]; else if(hasOwn(A,id)) result[id]=A[id];
       } else {
-        if(Object.prototype.hasOwnProperty.call(A,id)) result[id]=A[id];
-        else if(Object.prototype.hasOwnProperty.call(B,id)) result[id]=B[id];
+        if(hasOwn(A,id)) result[id]=A[id]; else if(hasOwn(B,id)) result[id]=B[id];
       }
     });
     out[field]=result;
   }
 
-  const lastChangeAt=Math.max(Number(a._sync.lastChangeAt)||0,Number(b._sync.lastChangeAt)||0,Number(a._syncedAt)||0,Number(b._syncedAt)||0);
-  out._sync={schema:SYNC_SCHEMA,entries,tombstones,lastChangeAt,migratedFromLegacy:!!(a._sync.migratedFromLegacy&&b._sync.migratedFromLegacy)};
+  // timetable: 같은 날짜를 두 기기에서 동시에 기록해도 서로 다른 10분 slot은 둘 다 살아남는다.
+  const ttResult={};
+  const ttIds=[];
+  [...collectTimetableSlotIds(a),...collectTimetableSlotIds(b)].forEach(id=>{ if(!ttIds.includes(id)) ttIds.push(id); });
+  ttIds.forEach(id=>{
+    const parsed=splitTimetableSlotId(id);
+    if(!parsed) return;
+    const {date,slot}=parsed;
+    const key=timetableSlotKey(date,slot);
+    const dayKey=timetableDayDeleteKey(date);
+    const ae=a._sync.entries?.[key]||"", be=b._sync.entries?.[key]||"";
+    const at=a._sync.tombstones?.[key]||"", bt=b._sync.tombstones?.[key]||"";
+    const ad=a._sync.tombstones?.[dayKey]||"", bd=b._sync.tombstones?.[dayKey]||"";
+    const ev=maxVersion(ae,be), tv=maxVersion(at,bt,ad,bd);
+    if(ev) entries[key]=ev;
+    const slotTomb=maxVersion(at,bt);
+    if(slotTomb) tombstones[key]=slotTomb;
+    const dayTomb=maxVersion(ad,bd);
+    if(dayTomb) tombstones[dayKey]=dayTomb;
+    if(tv && cmpVersion(tv,ev)>=0) return;
+
+    const av=a.timetable?.[date]?.[slot], bv=b.timetable?.[date]?.[slot];
+    let chosen;
+    if(cmpVersion(ae,be)>0) chosen=av!==undefined?av:bv;
+    else if(cmpVersion(be,ae)>0) chosen=bv!==undefined?bv:av;
+    else chosen=av!==undefined?av:bv;
+    if(chosen!==undefined){
+      if(!ttResult[date]) ttResult[date]={};
+      ttResult[date][slot]=chosen;
+    }
+  });
+  // day tombstone은 slot이 하나도 없어도 보존해야 과거 기기에서 해당 날짜가 부활하지 않는다.
+  const dayPrefix="timetable-day:";
+  for(const key of new Set([...Object.keys(a._sync.tombstones||{}),...Object.keys(b._sync.tombstones||{})])){
+    if(key.startsWith(dayPrefix)){
+      const v=maxVersion(a._sync.tombstones?.[key]||"",b._sync.tombstones?.[key]||"");
+      if(v) tombstones[key]=v;
+    }
+  }
+  out.timetable=ttResult;
+
+  const lastChangeAt=Math.max(
+    Number(a._sync.lastChangeAt)||0,
+    Number(b._sync.lastChangeAt)||0,
+    Number(a._syncedAt)||0,
+    Number(b._syncedAt)||0
+  );
+  out._sync={
+    schema:SYNC_SCHEMA,
+    entries,
+    tombstones,
+    lastChangeAt,
+    migratedFromLegacy:!!(a._sync.migratedFromLegacy&&b._sync.migratedFromLegacy),
+  };
   out._syncedAt=lastChangeAt;
   return out;
 }
 
-// localStorage는 비상용 경량 복사본. 사진 원본은 IndexedDB가 보관한다.
+// localStorage는 동기식 비상 복사본. 사진 원본은 IndexedDB에 보관한다.
 function stripHeavyData(d) {
   return {
     ...d,
@@ -424,6 +552,7 @@ function openStudyDB() {
     };
     req.onsuccess=()=>resolve(req.result);
     req.onerror=()=>reject(req.error||new Error("IndexedDB open failed"));
+    req.onblocked=()=>console.warn("IndexedDB open blocked by another old tab");
   });
   return idbPromise;
 }
@@ -438,6 +567,28 @@ async function idbReadState() {
     });
   } catch(err) {
     console.warn("IndexedDB read failed, fallback 사용:",err);
+    return null;
+  }
+}
+async function idbReadLegacyState() {
+  if(typeof indexedDB==="undefined") return null;
+  try {
+    const db=await new Promise((resolve,reject)=>{
+      const req=indexedDB.open(LEGACY_IDB_NAME,1);
+      req.onsuccess=()=>resolve(req.result);
+      req.onerror=()=>reject(req.error);
+    });
+    if(!db.objectStoreNames.contains(IDB_STORE)){ try{db.close();}catch{} return null; }
+    const value=await new Promise((resolve,reject)=>{
+      const tx=db.transaction(IDB_STORE,"readonly");
+      const req=tx.objectStore(IDB_STORE).get(IDB_KEY);
+      req.onsuccess=()=>resolve(req.result||null);
+      req.onerror=()=>reject(req.error);
+    });
+    try{db.close();}catch{}
+    return value;
+  } catch(err) {
+    console.warn("legacy IndexedDB read failed:",err);
     return null;
   }
 }
@@ -469,14 +620,26 @@ async function persistLocalMerged(candidateRaw) {
   }
 }
 async function readDurableLocal() {
-  const fallback=ensureSyncMeta(loadFallback(),"local");
-  const idb=await idbReadState();
-  if(!idb) return fallback;
-  // IDB를 첫 번째로 두어 같은 버전이면 사진이 포함된 IDB 값을 우선한다.
-  return mergeSyncData(ensureSyncMeta(idb,"local"),fallback);
+  // v3 저장소가 한 번이라도 만들어졌다면 그 이후에는 v2 저장소를 다시 섞지 않는다.
+  // 배포 전부터 열려 있던 오래된 탭이 v2 저장소를 수정해도 v3 데이터를 오염시킬 수 없다.
+  const currentFallbackRaw=loadCurrentFallback();
+  const currentIdb=await idbReadState();
+  if(currentIdb){
+    const primary=ensureSyncMeta(currentIdb,"local");
+    return currentFallbackRaw ? mergeSyncData(primary,ensureSyncMeta(currentFallbackRaw,"local")) : primary;
+  }
+  if(currentFallbackRaw) return ensureSyncMeta(currentFallbackRaw,"local");
+
+  // 최초 1회만 legacy 저장소를 읽어 v3로 마이그레이션한다.
+  const legacyIdb=await idbReadLegacyState();
+  const legacyFallback=loadLegacyFallback();
+  if(legacyIdb && legacyFallback) return mergeSyncData(ensureSyncMeta(legacyIdb,"legacy-idb"),ensureSyncMeta(legacyFallback,"legacy-ls"));
+  if(legacyIdb) return ensureSyncMeta(legacyIdb,"legacy-idb");
+  if(legacyFallback) return ensureSyncMeta(legacyFallback,"legacy-ls");
+  return ensureSyncMeta(initialData,"local");
 }
 
-// ── 자동 스냅샷 백업 (보조 안전망일 뿐, 동기화 정확성에 의존하지 않음) ────────────
+// ── 자동 스냅샷 백업: 복구용 보조 안전망. 정상 동기화가 이것에 의존하지는 않는다. ──
 const SNAPSHOT_KEY = "studyos_snapshots";
 function saveDailySnapshot(d) {
   try {
@@ -504,23 +667,26 @@ function listSnapshots() {
 // ── Supabase 안전 동기화 ───────────────────────────────────────────────────────
 const SUPABASE_URL = "https://xvvjvrgmgircgtpxcbzl.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2dmp2cmdtZ2lyY2d0cHhjYnpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDU5OTcsImV4cCI6MjA5OTU4MTk5N30.mfArU3TkTBhXHov5MKhglLTJRMf3Rxc7TKeNqXD-sjI";
-const SYNC_ROW_ID = "main";
+const SYNC_ROW_ID = "main_v3";
+const LEGACY_SYNC_ROW_ID = "main";
 
-async function cloudLoad() {
+async function cloudLoadRow(rowId) {
   try {
-    const res=await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}&select=data,updated_at`,{
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${encodeURIComponent(rowId)}&select=data,updated_at`,{
       headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,"Accept-Profile":"public"},
       cache:"no-store",
     });
-    if(!res.ok){ console.error("cloudLoad failed:",res.status,await res.text()); return {ok:false,exists:false,data:null,updatedAt:null}; }
+    if(!res.ok){ console.error("cloudLoad failed:",rowId,res.status,await res.text()); return {ok:false,exists:false,data:null,updatedAt:null}; }
     const json=await res.json();
     const row=json?.[0];
     return {ok:true,exists:!!row,data:row?.data||null,updatedAt:row?.updated_at||null};
-  } catch(err){ console.error("cloudLoad error:",err); return {ok:false,exists:false,data:null,updatedAt:null}; }
+  } catch(err){ console.error("cloudLoad error:",rowId,err); return {ok:false,exists:false,data:null,updatedAt:null}; }
 }
+function cloudLoad(){ return cloudLoadRow(SYNC_ROW_ID); }
+function cloudLoadLegacy(){ return cloudLoadRow(LEGACY_SYNC_ROW_ID); }
 
-// updated_at이 내가 읽은 값과 같은 경우에만 PATCH한다.
-// 그 사이 다른 탭/기기가 저장했다면 0행이 수정되어 conflict가 되고, 절대 덮어쓰지 않는다.
+// 내가 읽은 updated_at과 서버의 현재 updated_at이 같은 경우에만 쓰기.
+// 다른 탭/기기가 먼저 저장했으면 0행 수정 → conflict → 재조회/병합한다.
 async function cloudSaveCAS(d, expectedUpdatedAt, exists=true) {
   try {
     const newUpdatedAt=new Date().toISOString();
@@ -557,29 +723,26 @@ async function cloudSaveCAS(d, expectedUpdatedAt, exists=true) {
 }
 
 function reconcileLocalAndCloud(localRaw, cloudRaw) {
-  const localWasV2=isSyncV2(localRaw), cloudWasV2=isSyncV2(cloudRaw);
+  const localSchema=syncSchemaOf(localRaw), cloudSchema=syncSchemaOf(cloudRaw);
   const local=ensureSyncMeta(localRaw,"local"), cloud=cloudRaw?ensureSyncMeta(cloudRaw,"cloud"):null;
   if(!cloud || isEffectivelyEmpty(cloud)) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
   if(isEffectivelyEmpty(local)) return {...cloud,_sync:{...cloud._sync,migratedFromLegacy:false}};
 
-  // 현재 배포에서 v2로 처음 넘어오는 단 한 번의 마이그레이션 정책:
-  // 둘 다 구버전이면 이 기기의 현재 로컬을 기준으로 삼는다. 오래된 cloud 스냅샷을 합쳐
-  // 예전 오답이 다시 나타나는 문제를 막는다.
-  if(!localWasV2 && !cloudWasV2) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
-  if(localWasV2 && !cloudWasV2) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
+  // 최초 v3 마이그레이션에서는 현재 기기의 데이터가 존재하면 예전 전체-snapshot cloud를 무작정 섞지 않는다.
+  if(localSchema<SYNC_SCHEMA && cloudSchema<SYNC_SCHEMA) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
+  if(localSchema===SYNC_SCHEMA && cloudSchema<SYNC_SCHEMA) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
 
-  // 이 기기가 방금 구버전 로컬을 v2 형식으로 감싼 것뿐인데 서버에는 이미 진짜 v2가 있다면,
-  // 오래된 로컬을 무조건 합치지 않는다. 구버전 타임스탬프가 서버의 실제 변경시각보다 나중일 때만 병합한다.
-  if(local._sync.migratedFromLegacy && cloudWasV2){
-    const legacyTime=Number(localRaw?._syncedAt)||0;
+  // 새 기기의 구버전 localStorage와 이미 정상 운영 중인 v3 cloud가 만난 경우:
+  // 구버전 로컬이 실제로 더 나중에 저장된 증거가 있을 때만 병합한다.
+  if(localSchema<SYNC_SCHEMA && cloudSchema===SYNC_SCHEMA){
+    const legacyTime=Number(localRaw?._sync?.lastChangeAt)||Number(localRaw?._syncedAt)||0;
     const cloudTime=Number(cloud._sync.lastChangeAt)||0;
     if(legacyTime>cloudTime) return mergeSyncData(local,cloud);
     return {...cloud,_sync:{...cloud._sync,migratedFromLegacy:false}};
   }
 
-  if(!localWasV2 && cloudWasV2){
-    // 오래된 앱에서 만든 로컬 값이 v2 cloud보다 실제로 나중에 수정된 경우만 살려서 병합.
-    const legacyTime=Number(localRaw?._syncedAt)||0;
+  if(local._sync.migratedFromLegacy && cloudSchema===SYNC_SCHEMA){
+    const legacyTime=Number(localRaw?._sync?.lastChangeAt)||Number(localRaw?._syncedAt)||0;
     const cloudTime=Number(cloud._sync.lastChangeAt)||0;
     if(legacyTime>cloudTime) return mergeSyncData(local,cloud);
     return {...cloud,_sync:{...cloud._sync,migratedFromLegacy:false}};
@@ -590,14 +753,26 @@ function reconcileLocalAndCloud(localRaw, cloudRaw) {
 
 async function syncDurableWithCloud(startData) {
   let local=ensureSyncMeta(startData,"local");
-  for(let attempt=0;attempt<6;attempt++){
+  for(let attempt=0;attempt<8;attempt++){
     const remote=await cloudLoad();
     if(!remote.ok) return {ok:false,data:local,reason:"network"};
+
+    // v3 전용 row가 아직 없는 최초 마이그레이션.
+    // 이 기기에 실제 기록이 있으면 그 로컬을 기준으로 시작한다.
+    // 이 기기가 완전히 비어 있을 때만 구버전 main row를 가져와 새 v3 row의 시드로 사용한다.
+    if(!remote.exists && isEffectivelyEmpty(local)){
+      const legacy=await cloudLoadLegacy();
+      if(legacy.ok && legacy.exists && legacy.data && !isEffectivelyEmpty(legacy.data)){
+        local=ensureSyncMeta(legacy.data,"legacy-cloud");
+        local={...local,_sync:{...local._sync,migratedFromLegacy:false}};
+        local=await persistLocalMerged(local);
+      }
+    }
+
     let merged=reconcileLocalAndCloud(local,remote.data);
     merged=await persistLocalMerged(merged);
 
-    // 이미 서버와 완전히 같으면 쓰기 자체를 하지 않는다.
-    if(remote.exists && isSyncV2(remote.data) && sameSnapshot(ensureSyncMeta(remote.data,"cloud"),merged)){
+    if(remote.exists && isSyncCurrent(remote.data) && sameSnapshot(ensureSyncMeta(remote.data,"cloud"),merged)){
       saveDailySnapshot(merged);
       return {ok:true,data:merged};
     }
@@ -608,7 +783,6 @@ async function syncDurableWithCloud(startData) {
       return {ok:true,data:merged};
     }
     if(saved.conflict){
-      // 다른 탭/기기가 먼저 저장함 → 최신 로컬을 다시 읽고 서버 재조회/병합. 덮어쓰기 금지.
       local=await readDurableLocal();
       continue;
     }
@@ -616,6 +790,7 @@ async function syncDurableWithCloud(startData) {
   }
   return {ok:false,data:await readDurableLocal(),reason:"conflict-loop"};
 }
+
 
 function todayStr() { return new Date().toISOString().slice(0,10); }
 // 학습일 기준 날짜: 새벽 6시 이전이면 "어제"로 취급 (하루 공부 흐름을 06:00~다음날 06:00로 봄)
@@ -1593,11 +1768,16 @@ function PracticeMode({queue, onExit, onResult}) {
   const [showAnswer,setShowAnswer]=useState(false);
   const [results,setResults]=useState({correct:0, wrong:0});
   const [canvasKey,setCanvasKey]=useState(0);
-  const [successStreak,setSuccessStreak]=useState(0);
+  const [successStreak,setSuccessStreak]=useState(()=>queue?.[0]?.correctStreak||0);
 
   const current = queue[idx];
   const isLast = idx>=queue.length-1;
-  const currentStreak = current?.correctStreak||0;
+
+  // 연습 화면을 나갔다 다시 들어와도 저장된 연속 성공 횟수에서 이어서 시작한다.
+  // 같은 문제를 다시 푸는 동안에는 queue 원본이 갱신되지 않으므로 idx가 바뀔 때만 동기화한다.
+  useEffect(()=>{
+    setSuccessStreak(queue?.[idx]?.correctStreak||0);
+  },[idx,queue]);
 
   function mark(result){ // "correct" | "wrong"
     const nextStreak = result==="correct" ? successStreak+1 : 0;
@@ -2844,10 +3024,12 @@ export default function App() {
     return ()=>{ cancelled=true; };
   },[syncNow]);
 
-  // 2) 모든 수정은 즉시 IndexedDB에 항목별 병합 저장.
-  //    인터넷이 없어도 이 저장은 동작하고, cloud 저장 실패와 독립적이다.
+  // 2) 모든 수정은 로컬에 먼저 저장한다.
+  //    localStorage 경량본은 동기식으로 먼저 쓰고, 사진 포함 원본은 IndexedDB에 이어서 저장한다.
+  //    따라서 cloud 실패/오프라인과 로컬 저장이 완전히 분리된다.
   useEffect(()=>{
     let alive=true;
+    saveFallback(data);
     (async()=>{
       const persisted=await persistLocalMerged(data);
       if(!alive) return;
@@ -2872,6 +3054,24 @@ export default function App() {
     };
   },[data,syncNow]);
 
+  // 브라우저가 백그라운드/종료로 넘어갈 때 마지막 로컬 상태를 한 번 더 보존한다.
+  // cloud 쓰기는 unload 시도하지 않는다(불완전한 네트워크 요청으로 race를 만들지 않기 위해).
+  useEffect(()=>{
+    try { navigator.storage?.persist?.().catch(()=>{}); } catch {}
+    const flushLocal=()=>{
+      const snapshot=dataRef.current;
+      saveFallback(snapshot);
+      persistLocalMerged(snapshot).catch(()=>{});
+    };
+    const onVisibility=()=>{ if(document.visibilityState==="hidden") flushLocal(); };
+    window.addEventListener("pagehide",flushLocal);
+    document.addEventListener("visibilitychange",onVisibility);
+    return ()=>{
+      window.removeEventListener("pagehide",flushLocal);
+      document.removeEventListener("visibilitychange",onVisibility);
+    };
+  },[]);
+
   // 3) 같은 브라우저에서 탭이 여러 개 열려도 서로 오래된 메모리 state로 덮어쓰지 않는다.
   //    BroadcastChannel은 데이터 자체를 보내지 않고 "IDB 다시 읽어" 신호만 보낸다.
   useEffect(()=>{
@@ -2886,7 +3086,7 @@ export default function App() {
     }
 
     if(typeof BroadcastChannel!=="undefined"){
-      bc=new BroadcastChannel("studyos-sync-v2");
+      bc=new BroadcastChannel("studyos-sync-v3");
       broadcastRef.current=bc;
       bc.onmessage=e=>{
         if(e?.data?.source===SESSION_ID) return;
