@@ -78,14 +78,326 @@ function getMonthKey(dateStr) {
   return dateStr.slice(0,7); // "2024-01"
 }
 
-function load() {
-  try { const r=localStorage.getItem(STORAGE_KEY); return r?JSON.parse(r):initialData; }
-  catch { return initialData; }
+function loadFallback() {
+  try {
+    const r = localStorage.getItem(STORAGE_KEY);
+    return r ? JSON.parse(r) : initialData;
+  } catch {
+    return initialData;
+  }
 }
 
-// localStorage는 5~10MB 한도가 있어 사진(base64)까지 넣으면 금방 꽉 참.
-// 로컬 저장본에서는 사진 원본을 빼고, 대신 클라우드(Supabase)에는 사진 포함 전체를 저장.
-// 화면에 보이는 사진은 항상 React state(메모리)에 있는 원본을 쓰므로 사용 중엔 문제 없음.
+// ── 동기화 v2: "전체 JSON 덮어쓰기"를 버리고 항목별 버전 + 삭제 tombstone으로 병합 ──
+// 핵심 원칙
+// 1) 로컬 원본은 IndexedDB에 사진까지 포함해 보관한다.
+// 2) 모든 사용자 수정은 항목별 고유 버전을 받는다.
+// 3) 삭제도 tombstone으로 기록해 오래된 기기가 삭제 항목을 되살리지 못하게 한다.
+// 4) Supabase 저장은 updated_at을 이용한 CAS(낙관적 잠금)로만 수행한다.
+// 5) 충돌 시 서버를 다시 읽고 항목별로 병합한 뒤 재시도한다.
+const SYNC_SCHEMA = 2;
+const IDB_NAME = "studyos_v2";
+const IDB_STORE = "state";
+const IDB_KEY = "main";
+const CLIENT_ID_KEY = "studyos_client_id_v2";
+const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems"];
+const MAP_ENTITY_FIELDS = ["timetable", "plans", "folderNames", "weekGoals", "monthGoals", "nightNotes"];
+
+function makeRandomId() {
+  try { return crypto.randomUUID(); }
+  catch { return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`; }
+}
+function getClientId() {
+  try {
+    let id = localStorage.getItem(CLIENT_ID_KEY);
+    if (!id) {
+      id = makeRandomId();
+      localStorage.setItem(CLIENT_ID_KEY, id);
+    }
+    return id;
+  } catch { return makeRandomId(); }
+}
+const CLIENT_ID = getClientId();
+const SESSION_ID = makeRandomId(); // 탭마다 다름 → 같은 ms에 저장해도 버전 충돌 방지
+let lastVersionMs = 0;
+let versionCounter = 0;
+
+function nextSyncVersion() {
+  const now = Date.now();
+  if (now === lastVersionMs) versionCounter += 1;
+  else { lastVersionMs = now; versionCounter = 0; }
+  return `${String(now).padStart(15,"0")}:${String(versionCounter).padStart(6,"0")}:${CLIENT_ID}:${SESSION_ID}`;
+}
+function legacyVersion(ms=0, source="legacy") {
+  const n = Number(ms)||0;
+  return `${String(Math.max(0,Math.floor(n))).padStart(15,"0")}:000000:${source}:legacy`;
+}
+function cmpVersion(a="", b="") {
+  if (a === b) return 0;
+  return a > b ? 1 : -1;
+}
+function maxVersion(a="", b="") { return cmpVersion(a,b) >= 0 ? a : b; }
+function entityKey(field, id) { return `${field}:${String(id)}`; }
+
+function normalizeDataShape(d) {
+  const src = d && typeof d === "object" ? d : {};
+  return {
+    ...initialData,
+    ...src,
+    timetable: src.timetable || {},
+    plans: src.plans || {},
+    wrongs: Array.isArray(src.wrongs) ? src.wrongs : [],
+    folderNames: src.folderNames || {},
+    weekGoals: src.weekGoals || {},
+    monthGoals: src.monthGoals || {},
+    goalItems: Array.isArray(src.goalItems) ? src.goalItems : [],
+    nightNotes: src.nightNotes || {},
+    plans2: Array.isArray(src.plans2) ? src.plans2 : [],
+  };
+}
+function isSyncV2(d) { return d?._sync?.schema === SYNC_SCHEMA; }
+function itemId(item, index, field) {
+  if (item && item.id !== undefined && item.id !== null) return String(item.id);
+  // 예전 데이터에 id가 없더라도 동일 스냅샷에서는 결정적으로 같은 id가 나오게 함.
+  let text = "";
+  try { text = JSON.stringify(item); } catch { text = String(item); }
+  let h = 2166136261;
+  for (let i=0;i<text.length;i++) { h ^= text.charCodeAt(i); h = Math.imul(h,16777619); }
+  return `legacy-${field}-${index}-${(h>>>0).toString(36)}`;
+}
+function isEffectivelyEmpty(d) {
+  if (!d) return true;
+  return (
+    Object.keys(d.timetable||{}).length===0 &&
+    Object.keys(d.plans||{}).length===0 &&
+    (d.wrongs||[]).length===0 &&
+    (d.plans2||[]).length===0 &&
+    (d.goalItems||[]).length===0 &&
+    Object.keys(d.nightNotes||{}).length===0 &&
+    Object.keys(d.folderNames||{}).length===0 &&
+    Object.keys(d.weekGoals||{}).length===0 &&
+    Object.keys(d.monthGoals||{}).length===0
+  );
+}
+
+function ensureSyncMeta(raw, source="local") {
+  const d = normalizeDataShape(raw);
+  if (isSyncV2(d)) {
+    return {
+      ...d,
+      _sync: {
+        schema: SYNC_SCHEMA,
+        entries: {...(d._sync.entries||{})},
+        tombstones: {...(d._sync.tombstones||{})},
+        lastChangeAt: Number(d._sync.lastChangeAt)||Number(d._syncedAt)||0,
+        migratedFromLegacy: !!d._sync.migratedFromLegacy,
+      },
+    };
+  }
+
+  const baseMs = Number(d._syncedAt)||0;
+  const v = legacyVersion(baseMs, source);
+  const entries = {};
+  for (const field of ARRAY_ENTITY_FIELDS) {
+    (d[field]||[]).forEach((item,i)=>{ entries[entityKey(field,itemId(item,i,field))] = v; });
+  }
+  for (const field of MAP_ENTITY_FIELDS) {
+    Object.keys(d[field]||{}).forEach(k=>{ entries[entityKey(field,k)] = v; });
+  }
+  return {
+    ...d,
+    _sync: {
+      schema: SYNC_SCHEMA,
+      entries,
+      tombstones: {},
+      lastChangeAt: baseMs,
+      migratedFromLegacy: true,
+    },
+  };
+}
+
+function sameValue(a,b) {
+  if (a === b) return true;
+  try { return JSON.stringify(a) === JSON.stringify(b); }
+  catch { return false; }
+}
+function stableStringify(value) {
+  const seen = new WeakSet();
+  const walk = v => {
+    if (v === null || typeof v !== "object") return v;
+    if (seen.has(v)) return "[Circular]";
+    seen.add(v);
+    if (Array.isArray(v)) return v.map(walk);
+    const out = {};
+    Object.keys(v).sort().forEach(k=>{ out[k]=walk(v[k]); });
+    return out;
+  };
+  try { return JSON.stringify(walk(value)); }
+  catch { try { return JSON.stringify(value); } catch { return String(value); } }
+}
+function sameSnapshot(a,b) { return stableStringify(a) === stableStringify(b); }
+
+// 모든 setData를 이 함수가 통과한다. 바뀐 항목만 새 버전을 받고,
+// 삭제된 항목은 tombstone을 남긴다. 따라서 오래된 스냅샷이 다시 와도 부활하지 않는다.
+function stampLocalChanges(prevRaw, nextRaw) {
+  const prev = ensureSyncMeta(prevRaw, "local");
+  const next = normalizeDataShape(nextRaw);
+  const entries = {...(prev._sync.entries||{})};
+  const tombstones = {...(prev._sync.tombstones||{})};
+  let changed = false;
+  let lastChangeAt = Number(prev._sync.lastChangeAt)||0;
+
+  const markPresent = key => {
+    const v = nextSyncVersion();
+    entries[key] = v;
+    delete tombstones[key];
+    changed = true;
+    lastChangeAt = Date.now();
+  };
+  const markDeleted = key => {
+    const v = nextSyncVersion();
+    tombstones[key] = v;
+    changed = true;
+    lastChangeAt = Date.now();
+  };
+
+  for (const field of ARRAY_ENTITY_FIELDS) {
+    const pArr = prev[field]||[], nArr = next[field]||[];
+    const pMap = new Map(pArr.map((x,i)=>[itemId(x,i,field),x]));
+    const nMap = new Map(nArr.map((x,i)=>[itemId(x,i,field),x]));
+    const ids = new Set([...pMap.keys(), ...nMap.keys()]);
+    ids.forEach(id=>{
+      const key = entityKey(field,id);
+      const hasP = pMap.has(id), hasN = nMap.has(id);
+      if (hasP && !hasN) markDeleted(key);
+      else if (!hasP && hasN) markPresent(key);
+      else if (hasP && hasN && !sameValue(pMap.get(id),nMap.get(id))) markPresent(key);
+    });
+  }
+
+  for (const field of MAP_ENTITY_FIELDS) {
+    const pMap = prev[field]||{}, nMap = next[field]||{};
+    const keys = new Set([...Object.keys(pMap), ...Object.keys(nMap)]);
+    keys.forEach(id=>{
+      const key = entityKey(field,id);
+      const hasP = Object.prototype.hasOwnProperty.call(pMap,id);
+      const hasN = Object.prototype.hasOwnProperty.call(nMap,id);
+      if (hasP && !hasN) markDeleted(key);
+      else if (!hasP && hasN) markPresent(key);
+      else if (hasP && hasN && !sameValue(pMap[id],nMap[id])) markPresent(key);
+    });
+  }
+
+  // UI state만 똑같이 다시 setData한 경우에는 새 버전을 만들지 않는다.
+  if (!changed) return {
+    ...next,
+    _sync: {...prev._sync, entries, tombstones},
+    _syncedAt: prev._syncedAt||0,
+  };
+
+  return {
+    ...next,
+    _sync: {
+      schema: SYNC_SCHEMA,
+      entries,
+      tombstones,
+      lastChangeAt,
+      migratedFromLegacy: false,
+    },
+    // 구버전과의 호환용. v2 동기화의 우선순위 판단에는 사용하지 않는다.
+    _syncedAt: lastChangeAt,
+  };
+}
+
+function getArrayMap(d, field) {
+  const arr=d[field]||[];
+  const map=new Map();
+  arr.forEach((x,i)=>map.set(itemId(x,i,field),x));
+  return {arr,map};
+}
+function collectMetaIds(sync, field) {
+  const prefix=`${field}:`;
+  const ids=[];
+  for (const k of Object.keys(sync.entries||{})) if(k.startsWith(prefix)) ids.push(k.slice(prefix.length));
+  for (const k of Object.keys(sync.tombstones||{})) if(k.startsWith(prefix)) ids.push(k.slice(prefix.length));
+  return ids;
+}
+
+// v2끼리는 "최신 스냅샷 하나 선택"이 아니라 항목별로 병합한다.
+// 서로 다른 항목을 두 기기/두 탭에서 동시에 추가해도 둘 다 살아남는다.
+function mergeSyncData(aRaw,bRaw) {
+  const a=ensureSyncMeta(aRaw,"local"), b=ensureSyncMeta(bRaw,"cloud");
+  const out=normalizeDataShape(a);
+  const entries={};
+  const tombstones={};
+
+  for (const field of ARRAY_ENTITY_FIELDS) {
+    const A=getArrayMap(a,field), B=getArrayMap(b,field);
+    const order=[];
+    [...A.map.keys(),...B.map.keys(),...collectMetaIds(a._sync,field),...collectMetaIds(b._sync,field)].forEach(id=>{
+      if(!order.includes(id)) order.push(id);
+    });
+    const result=[];
+    order.forEach(id=>{
+      const key=entityKey(field,id);
+      const ae=a._sync.entries?.[key]||"", be=b._sync.entries?.[key]||"";
+      const at=a._sync.tombstones?.[key]||"", bt=b._sync.tombstones?.[key]||"";
+      const ev=maxVersion(ae,be), tv=maxVersion(at,bt);
+      if(ev) entries[key]=ev;
+      if(tv) tombstones[key]=tv;
+      if(tv && cmpVersion(tv,ev)>=0) return; // 삭제가 더 최신 → 절대 부활시키지 않음
+
+      let chosen=null;
+      if(cmpVersion(ae,be)>0) chosen=A.map.get(id)||B.map.get(id)||null;
+      else if(cmpVersion(be,ae)>0) chosen=B.map.get(id)||A.map.get(id)||null;
+      else {
+        const av=A.map.get(id), bv=B.map.get(id);
+        if(av && bv && field==="wrongs") {
+          // localStorage 백업본은 사진을 빼므로 같은 버전이면 사진은 있는 쪽에서 복원
+          chosen={...bv,...av};
+          if(!chosen.photo && bv.photo) chosen.photo=bv.photo;
+        } else chosen=av||bv||null;
+      }
+      if(chosen) result.push(chosen);
+    });
+    out[field]=result;
+  }
+
+  for (const field of MAP_ENTITY_FIELDS) {
+    const A=a[field]||{}, B=b[field]||{};
+    const ids=[];
+    [...Object.keys(A),...Object.keys(B),...collectMetaIds(a._sync,field),...collectMetaIds(b._sync,field)].forEach(id=>{
+      if(!ids.includes(id)) ids.push(id);
+    });
+    const result={};
+    ids.forEach(id=>{
+      const key=entityKey(field,id);
+      const ae=a._sync.entries?.[key]||"", be=b._sync.entries?.[key]||"";
+      const at=a._sync.tombstones?.[key]||"", bt=b._sync.tombstones?.[key]||"";
+      const ev=maxVersion(ae,be), tv=maxVersion(at,bt);
+      if(ev) entries[key]=ev;
+      if(tv) tombstones[key]=tv;
+      if(tv && cmpVersion(tv,ev)>=0) return;
+      if(cmpVersion(ae,be)>0) {
+        if(Object.prototype.hasOwnProperty.call(A,id)) result[id]=A[id];
+        else if(Object.prototype.hasOwnProperty.call(B,id)) result[id]=B[id];
+      } else if(cmpVersion(be,ae)>0) {
+        if(Object.prototype.hasOwnProperty.call(B,id)) result[id]=B[id];
+        else if(Object.prototype.hasOwnProperty.call(A,id)) result[id]=A[id];
+      } else {
+        if(Object.prototype.hasOwnProperty.call(A,id)) result[id]=A[id];
+        else if(Object.prototype.hasOwnProperty.call(B,id)) result[id]=B[id];
+      }
+    });
+    out[field]=result;
+  }
+
+  const lastChangeAt=Math.max(Number(a._sync.lastChangeAt)||0,Number(b._sync.lastChangeAt)||0,Number(a._syncedAt)||0,Number(b._syncedAt)||0);
+  out._sync={schema:SYNC_SCHEMA,entries,tombstones,lastChangeAt,migratedFromLegacy:!!(a._sync.migratedFromLegacy&&b._sync.migratedFromLegacy)};
+  out._syncedAt=lastChangeAt;
+  return out;
+}
+
+// localStorage는 비상용 경량 복사본. 사진 원본은 IndexedDB가 보관한다.
 function stripHeavyData(d) {
   return {
     ...d,
@@ -95,35 +407,92 @@ function stripHeavyData(d) {
     }),
   };
 }
-
-function save(d) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(stripHeavyData(d)));
-  } catch(err) {
-    // 그래도 용량이 넘치면(사진 뺀 것도 클 정도로 데이터가 많으면) 조용히 무시.
-    // 클라우드 저장이 별도로 성사되므로 데이터 자체는 안전함.
-    console.error("localStorage save failed (사진 제외 후에도 초과):", err);
-  }
+function saveFallback(d) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(stripHeavyData(d))); }
+  catch(err) { console.error("localStorage fallback save failed:",err); }
 }
 
-// ── 자동 스냅샷 백업 (덮어쓰기 사고 대비, 최근 7일치 보관) ────────────────────────
+let idbPromise=null;
+function openStudyDB() {
+  if(typeof indexedDB==="undefined") return Promise.reject(new Error("IndexedDB unavailable"));
+  if(idbPromise) return idbPromise;
+  idbPromise=new Promise((resolve,reject)=>{
+    const req=indexedDB.open(IDB_NAME,1);
+    req.onupgradeneeded=()=>{
+      const db=req.result;
+      if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess=()=>resolve(req.result);
+    req.onerror=()=>reject(req.error||new Error("IndexedDB open failed"));
+  });
+  return idbPromise;
+}
+async function idbReadState() {
+  try {
+    const db=await openStudyDB();
+    return await new Promise((resolve,reject)=>{
+      const tx=db.transaction(IDB_STORE,"readonly");
+      const req=tx.objectStore(IDB_STORE).get(IDB_KEY);
+      req.onsuccess=()=>resolve(req.result||null);
+      req.onerror=()=>reject(req.error);
+    });
+  } catch(err) {
+    console.warn("IndexedDB read failed, fallback 사용:",err);
+    return null;
+  }
+}
+async function persistLocalMerged(candidateRaw) {
+  const candidate=ensureSyncMeta(candidateRaw,"local");
+  try {
+    const db=await openStudyDB();
+    let merged=candidate;
+    await new Promise((resolve,reject)=>{
+      const tx=db.transaction(IDB_STORE,"readwrite");
+      const store=tx.objectStore(IDB_STORE);
+      const getReq=store.get(IDB_KEY);
+      getReq.onsuccess=()=>{
+        const existing=getReq.result;
+        merged=existing ? mergeSyncData(existing,candidate) : candidate;
+        store.put(merged,IDB_KEY);
+      };
+      getReq.onerror=()=>reject(getReq.error);
+      tx.oncomplete=()=>resolve();
+      tx.onerror=()=>reject(tx.error);
+      tx.onabort=()=>reject(tx.error||new Error("IndexedDB transaction aborted"));
+    });
+    saveFallback(merged);
+    return merged;
+  } catch(err) {
+    console.warn("IndexedDB write failed, localStorage fallback 사용:",err);
+    saveFallback(candidate);
+    return candidate;
+  }
+}
+async function readDurableLocal() {
+  const fallback=ensureSyncMeta(loadFallback(),"local");
+  const idb=await idbReadState();
+  if(!idb) return fallback;
+  // IDB를 첫 번째로 두어 같은 버전이면 사진이 포함된 IDB 값을 우선한다.
+  return mergeSyncData(ensureSyncMeta(idb,"local"),fallback);
+}
+
+// ── 자동 스냅샷 백업 (보조 안전망일 뿐, 동기화 정확성에 의존하지 않음) ────────────
 const SNAPSHOT_KEY = "studyos_snapshots";
 function saveDailySnapshot(d) {
   try {
     const today = todayStr();
     const raw = localStorage.getItem(SNAPSHOT_KEY);
     const snapshots = raw ? JSON.parse(raw) : {};
-    // 오늘 스냅샷이 이미 있고 지금 데이터가 더 작으면(항목 수 감소) 안 덮어씀 — 실수로 줄어든 걸 스냅샷으로 보존하지 않기 위함
+    const light = stripHeavyData(d);
+    const currentSize = JSON.stringify(light).length;
     const existing = snapshots[today];
-    const currentSize = JSON.stringify(d).length;
     if (!existing || currentSize >= (existing.size||0)) {
-      snapshots[today] = { data: d, size: currentSize, savedAt: Date.now() };
+      snapshots[today] = { data: light, size: currentSize, savedAt: Date.now() };
     }
-    // 7일보다 오래된 스냅샷은 정리
     const cutoff = Date.now() - 7*24*60*60*1000;
     Object.keys(snapshots).forEach(k=>{ if(snapshots[k].savedAt < cutoff) delete snapshots[k]; });
     localStorage.setItem(SNAPSHOT_KEY, JSON.stringify(snapshots));
-  } catch {}
+  } catch(err) { console.warn("snapshot save failed:",err); }
 }
 function listSnapshots() {
   try {
@@ -132,50 +501,120 @@ function listSnapshots() {
   } catch { return {}; }
 }
 
-// ── Supabase 자동 동기화 (기기 간 데이터 공유) ─────────────────────────────────
+// ── Supabase 안전 동기화 ───────────────────────────────────────────────────────
 const SUPABASE_URL = "https://xvvjvrgmgircgtpxcbzl.supabase.co";
 const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh2dmp2cmdtZ2lyY2d0cHhjYnpsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQwMDU5OTcsImV4cCI6MjA5OTU4MTk5N30.mfArU3TkTBhXHov5MKhglLTJRMf3Rxc7TKeNqXD-sjI";
-const SYNC_ROW_ID = "main"; // 한 명이 쓰는 앱이라 고정 row 하나만 사용
+const SYNC_ROW_ID = "main";
 
 async function cloudLoad() {
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}&select=data`, {
-      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}`, "Accept-Profile": "public" }
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}&select=data,updated_at`,{
+      headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,"Accept-Profile":"public"},
+      cache:"no-store",
     });
-    if (!res.ok) {
-      console.error("cloudLoad failed:", res.status, await res.text());
-      return { ok:false, data:null };
-    }
-    const json = await res.json();
-    return { ok:true, data: json?.[0]?.data || null };
-  } catch (err) {
-    console.error("cloudLoad error:", err);
-    return { ok:false, data:null };
-  }
+    if(!res.ok){ console.error("cloudLoad failed:",res.status,await res.text()); return {ok:false,exists:false,data:null,updatedAt:null}; }
+    const json=await res.json();
+    const row=json?.[0];
+    return {ok:true,exists:!!row,data:row?.data||null,updatedAt:row?.updated_at||null};
+  } catch(err){ console.error("cloudLoad error:",err); return {ok:false,exists:false,data:null,updatedAt:null}; }
 }
 
-async function cloudSave(d) {
+// updated_at이 내가 읽은 값과 같은 경우에만 PATCH한다.
+// 그 사이 다른 탭/기기가 저장했다면 0행이 수정되어 conflict가 되고, 절대 덮어쓰지 않는다.
+async function cloudSaveCAS(d, expectedUpdatedAt, exists=true) {
   try {
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/study_data`, {
-      method: "POST",
-      headers: {
-        apikey: SUPABASE_KEY,
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json",
-        "Content-Profile": "public",
-        Prefer: "resolution=merge-duplicates,return=minimal"
-      },
-      body: JSON.stringify({ id: SYNC_ROW_ID, data: d, updated_at: new Date().toISOString() })
-    });
-    if (!res.ok) {
-      console.error("cloudSave failed:", res.status, await res.text());
-      return false;
+    const newUpdatedAt=new Date().toISOString();
+    if(!exists){
+      const res=await fetch(`${SUPABASE_URL}/rest/v1/study_data?select=updated_at`,{
+        method:"POST",
+        headers:{
+          apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,
+          "Content-Type":"application/json","Content-Profile":"public",Prefer:"return=representation"
+        },
+        body:JSON.stringify({id:SYNC_ROW_ID,data:d,updated_at:newUpdatedAt}),
+      });
+      if(res.status===409) return {ok:false,conflict:true,updatedAt:null};
+      if(!res.ok){ console.error("cloud create failed:",res.status,await res.text()); return {ok:false,conflict:false,updatedAt:null}; }
+      const json=await res.json();
+      return {ok:true,conflict:false,updatedAt:json?.[0]?.updated_at||newUpdatedAt};
     }
-    return true;
-  } catch (err) {
-    console.error("cloudSave error:", err);
-    return false;
+
+    if(!expectedUpdatedAt) return {ok:false,conflict:true,updatedAt:null};
+    const filter=encodeURIComponent(expectedUpdatedAt);
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/study_data?id=eq.${SYNC_ROW_ID}&updated_at=eq.${filter}&select=updated_at`,{
+      method:"PATCH",
+      headers:{
+        apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,
+        "Content-Type":"application/json","Content-Profile":"public",Prefer:"return=representation"
+      },
+      body:JSON.stringify({data:d,updated_at:newUpdatedAt}),
+    });
+    if(!res.ok){ console.error("cloud CAS save failed:",res.status,await res.text()); return {ok:false,conflict:false,updatedAt:null}; }
+    const json=await res.json();
+    if(!Array.isArray(json)||json.length===0) return {ok:false,conflict:true,updatedAt:null};
+    return {ok:true,conflict:false,updatedAt:json[0].updated_at||newUpdatedAt};
+  } catch(err){ console.error("cloudSaveCAS error:",err); return {ok:false,conflict:false,updatedAt:null}; }
+}
+
+function reconcileLocalAndCloud(localRaw, cloudRaw) {
+  const localWasV2=isSyncV2(localRaw), cloudWasV2=isSyncV2(cloudRaw);
+  const local=ensureSyncMeta(localRaw,"local"), cloud=cloudRaw?ensureSyncMeta(cloudRaw,"cloud"):null;
+  if(!cloud || isEffectivelyEmpty(cloud)) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
+  if(isEffectivelyEmpty(local)) return {...cloud,_sync:{...cloud._sync,migratedFromLegacy:false}};
+
+  // 현재 배포에서 v2로 처음 넘어오는 단 한 번의 마이그레이션 정책:
+  // 둘 다 구버전이면 이 기기의 현재 로컬을 기준으로 삼는다. 오래된 cloud 스냅샷을 합쳐
+  // 예전 오답이 다시 나타나는 문제를 막는다.
+  if(!localWasV2 && !cloudWasV2) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
+  if(localWasV2 && !cloudWasV2) return {...local,_sync:{...local._sync,migratedFromLegacy:false}};
+
+  // 이 기기가 방금 구버전 로컬을 v2 형식으로 감싼 것뿐인데 서버에는 이미 진짜 v2가 있다면,
+  // 오래된 로컬을 무조건 합치지 않는다. 구버전 타임스탬프가 서버의 실제 변경시각보다 나중일 때만 병합한다.
+  if(local._sync.migratedFromLegacy && cloudWasV2){
+    const legacyTime=Number(localRaw?._syncedAt)||0;
+    const cloudTime=Number(cloud._sync.lastChangeAt)||0;
+    if(legacyTime>cloudTime) return mergeSyncData(local,cloud);
+    return {...cloud,_sync:{...cloud._sync,migratedFromLegacy:false}};
   }
+
+  if(!localWasV2 && cloudWasV2){
+    // 오래된 앱에서 만든 로컬 값이 v2 cloud보다 실제로 나중에 수정된 경우만 살려서 병합.
+    const legacyTime=Number(localRaw?._syncedAt)||0;
+    const cloudTime=Number(cloud._sync.lastChangeAt)||0;
+    if(legacyTime>cloudTime) return mergeSyncData(local,cloud);
+    return {...cloud,_sync:{...cloud._sync,migratedFromLegacy:false}};
+  }
+
+  return mergeSyncData(local,cloud);
+}
+
+async function syncDurableWithCloud(startData) {
+  let local=ensureSyncMeta(startData,"local");
+  for(let attempt=0;attempt<6;attempt++){
+    const remote=await cloudLoad();
+    if(!remote.ok) return {ok:false,data:local,reason:"network"};
+    let merged=reconcileLocalAndCloud(local,remote.data);
+    merged=await persistLocalMerged(merged);
+
+    // 이미 서버와 완전히 같으면 쓰기 자체를 하지 않는다.
+    if(remote.exists && isSyncV2(remote.data) && sameSnapshot(ensureSyncMeta(remote.data,"cloud"),merged)){
+      saveDailySnapshot(merged);
+      return {ok:true,data:merged};
+    }
+
+    const saved=await cloudSaveCAS(merged,remote.updatedAt,remote.exists);
+    if(saved.ok){
+      saveDailySnapshot(merged);
+      return {ok:true,data:merged};
+    }
+    if(saved.conflict){
+      // 다른 탭/기기가 먼저 저장함 → 최신 로컬을 다시 읽고 서버 재조회/병합. 덮어쓰기 금지.
+      local=await readDurableLocal();
+      continue;
+    }
+    return {ok:false,data:merged,reason:"save"};
+  }
+  return {ok:false,data:await readDurableLocal(),reason:"conflict-loop"};
 }
 
 function todayStr() { return new Date().toISOString().slice(0,10); }
@@ -2240,16 +2679,29 @@ function CalendarView({data,setData,onSelectDate}) {
 
 // ── 메인 ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [data,setData]=useState(load);
+  // 화면 state와 저장 state를 분리한다. UI에서 일어나는 모든 setData는 아래 래퍼를 통해
+  // 항목별 버전/tombstone을 자동 기록한다. 서버/다른 탭에서 병합된 데이터만 setDataRaw를 쓴다.
+  const [data,setDataRaw]=useState(()=>ensureSyncMeta(loadFallback(),"local"));
+  const dataRef=useRef(data);
+  dataRef.current=data;
+  const setData=useCallback((update)=>{
+    setDataRaw(prev=>{
+      const next=typeof update==="function" ? update(prev) : update;
+      return stampLocalChanges(prev,next);
+    });
+  },[]);
+
   const [tab,setTab]=useState("schedule");
   const [modal,setModal]=useState(null);
   const [editWrong,setEditWrong]=useState(null);
   const [scheduleDate,setScheduleDate]=useState(studyDayStr());
   const [practiceQueue,setPracticeQueue]=useState(null); // array of wrong entries with photo
-  const [syncStatus,setSyncStatus]=useState("idle"); // idle | syncing | synced | error
-  const cloudTimerRef = useRef(null);
-  const initialSyncDone = useRef(false);
-  const skipNextSaveRef = useRef(false); // 초기 동기화용 setData 직후 한 번은 타임스탬프 재기록을 건너뜀
+  const [syncStatus,setSyncStatus]=useState("idle"); // idle | syncing | synced | error | offline
+  const cloudTimerRef=useRef(null);
+  const initialSyncDone=useRef(false);
+  const syncInFlightRef=useRef(null);
+  const syncRequestedRef=useRef(false);
+  const broadcastRef=useRef(null);
 
   // ── 계획 실행 타이머 (전역: 탭 이동/새로고침/백그라운드에도 유지) ────────────────
   const TIMER_KEY = "studyos_active_timer";
@@ -2326,130 +2778,154 @@ export default function App() {
     return h>0 ? `${h}:${String(m).padStart(2,"0")}:${String(s).padStart(2,"0")}` : `${m}:${String(s).padStart(2,"0")}`;
   }
 
-  // 앱 켜질 때 클라우드 데이터와 로컬 데이터 중 "더 최신"인 쪽을 사용
-  // (빈 클라우드 데이터가 로컬의 실제 기록을 덮어쓰는 사고를 방지)
+  // ── 안전 동기화 엔진 ────────────────────────────────────────────────────────
+  // 한 번에 cloud sync는 하나만 실행한다. 실행 중 또 요청되면 끝난 뒤 한 번 더 돌린다.
+  // 따라서 오래 걸린 이전 요청이 나중 요청을 뒤늦게 덮어쓰는 race가 없다.
+  const syncNow=useCallback(async()=>{
+    if(typeof navigator!=="undefined" && navigator.onLine===false){
+      setSyncStatus("offline");
+      return {ok:false,reason:"offline"};
+    }
+    if(syncInFlightRef.current){
+      syncRequestedRef.current=true;
+      return syncInFlightRef.current;
+    }
+
+    const task=(async()=>{
+      let last={ok:true};
+      do{
+        syncRequestedRef.current=false;
+        setSyncStatus("syncing");
+
+        // 현재 메모리 + 다른 탭이 이미 IDB에 쓴 최신본을 먼저 안전 병합한다.
+        let local=await readDurableLocal();
+        local=mergeSyncData(local,dataRef.current);
+        local=await persistLocalMerged(local);
+
+        const result=await syncDurableWithCloud(local);
+        last=result;
+
+        // sync 도중 사용자가 새로 수정했어도 persistLocalMerged가 항목별 버전을 비교하므로
+        // 방금 수정한 데이터가 과거 cloud 결과에 의해 사라지지 않는다.
+        const finalLocal=await persistLocalMerged(result.data||local);
+        if(!sameSnapshot(finalLocal,dataRef.current)) setDataRaw(finalLocal);
+
+        if(!result.ok){
+          setSyncStatus((typeof navigator!=="undefined"&&navigator.onLine===false)?"offline":"error");
+          return result;
+        }
+        setSyncStatus("synced");
+      }while(syncRequestedRef.current && (typeof navigator==="undefined" || navigator.onLine!==false));
+      return last;
+    })();
+
+    syncInFlightRef.current=task;
+    try { return await task; }
+    finally { syncInFlightRef.current=null; }
+  },[]);
+
+  // 1) 앱 시작: IndexedDB가 로컬 원본. localStorage는 사진 없는 비상용 fallback.
+  //    서버 응답이 늦게 와도 setData로 통째로 교체하지 않고 항상 병합한다.
   useEffect(()=>{
-    (async () => {
-      // 처음부터 오프라인이면 클라우드 요청 자체를 시도하지 않고 로컬 데이터로 즉시 시작
-      if (typeof navigator !== "undefined" && navigator.onLine === false) {
-        setData(load());
-        initialSyncDone.current = true;
+    let cancelled=false;
+    (async()=>{
+      let local=await readDurableLocal();
+      local=await persistLocalMerged(mergeSyncData(local,dataRef.current));
+      if(cancelled) return;
+      if(!sameSnapshot(local,dataRef.current)) setDataRaw(local);
+
+      initialSyncDone.current=true;
+      if(typeof navigator!=="undefined" && navigator.onLine===false){
         setSyncStatus("offline");
         return;
       }
-      setSyncStatus("syncing");
-      const cloudResult = await cloudLoad();
-      const localData = load();
+      await syncNow();
+    })();
+    return ()=>{ cancelled=true; };
+  },[syncNow]);
 
-      if (!cloudResult.ok) {
-        // 클라우드 요청 자체가 실패 (네트워크/API 오류) → 로컬 유지, 실패 표시
-        setData(localData);
-        initialSyncDone.current = true;
-        setSyncStatus("error");
+  // 2) 모든 수정은 즉시 IndexedDB에 항목별 병합 저장.
+  //    인터넷이 없어도 이 저장은 동작하고, cloud 저장 실패와 독립적이다.
+  useEffect(()=>{
+    let alive=true;
+    (async()=>{
+      const persisted=await persistLocalMerged(data);
+      if(!alive) return;
+      if(!sameSnapshot(persisted,dataRef.current)){
+        setDataRaw(persisted);
         return;
       }
-
-      const cloudData = cloudResult.data;
-      const localTime = localData?._syncedAt || 0;
-      const cloudTime = cloudData?._syncedAt || 0;
-
-      // 데이터가 "사실상 비어있는지" 판정 — 모든 필드를 다 확인해야 함
-      // (일부 필드만 확인하면, 실제 데이터가 있는데도 비어있다고 오판해서
-      //  로컬의 빈 상태로 클라우드/서로의 진짜 데이터를 덮어쓰는 사고가 남)
-      function isEffectivelyEmpty(d){
-        if(!d) return true;
-        return (
-          Object.keys(d.timetable||{}).length===0 &&
-          Object.keys(d.plans||{}).length===0 &&
-          (d.wrongs||[]).length===0 &&
-          (d.plans2||[]).length===0 &&
-          (d.goalItems||[]).length===0 &&
-          Object.keys(d.nightNotes||{}).length===0 &&
-          Object.keys(d.folderNames||{}).length===0
-        );
-      }
-      const cloudIsEmpty = isEffectivelyEmpty(cloudData);
-      const localIsEmpty = isEffectivelyEmpty(localData);
-
-      // 로컬 저장본은 용량 문제로 사진(photo)을 빼고 저장하므로,
-      // 로컬 데이터를 쓰기로 하더라도 클라우드에 있던 사진들을 다시 채워 넣어야 화면에 보임.
-      function restorePhotos(target, source) {
-        if (!source) return target;
-        const photoMap = {};
-        (source.wrongs||[]).forEach(w => { if (w.photo) photoMap[w.id] = w.photo; });
-        return {
-          ...target,
-          wrongs: (target.wrongs||[]).map(w => {
-            if (w.photo) return w; // 이미 사진 있음(방금 세션에서 추가한 경우)
-            const restored = photoMap[w.id];
-            return restored ? { ...w, photo: restored } : w;
-          }),
-        };
-      }
-
-      if (!cloudIsEmpty && localIsEmpty) {
-        // 로컬은 비었는데 클라우드엔 실제 데이터가 있음 → 무조건 클라우드 채택
-        // (다른 기기에서 처음 여는 경우가 정확히 이 케이스)
-        skipNextSaveRef.current = true;
-        setData(cloudData);
-      } else if (!cloudIsEmpty && cloudTime > localTime) {
-        // 둘 다 데이터가 있고 클라우드가 더 최신 → 클라우드 채택
-        skipNextSaveRef.current = true;
-        setData(cloudData);
-      } else {
-        // 로컬이 더 최신이거나, 로컬에만 데이터가 있거나, 둘 다 비어있음 → 로컬 유지 + 사진 복원
-        const merged = restorePhotos(localData, cloudData);
-        skipNextSaveRef.current = true;
-        setData(merged);
-        if (!localIsEmpty) {
-          const ok = await cloudSave({ ...merged, _syncedAt: Date.now() });
-          if (!ok) { initialSyncDone.current = true; setSyncStatus("error"); return; }
-        }
-      }
-      initialSyncDone.current = true;
-      setSyncStatus("synced");
+      try { broadcastRef.current?.postMessage({type:"changed",source:SESSION_ID}); } catch {}
     })();
+
+    if(!initialSyncDone.current) return ()=>{ alive=false; };
+    if(typeof navigator!=="undefined" && navigator.onLine===false){
+      setSyncStatus("offline");
+      return ()=>{ alive=false; };
+    }
+
+    if(cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
+    cloudTimerRef.current=setTimeout(()=>{ syncNow(); },900);
+    return ()=>{
+      alive=false;
+      if(cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
+    };
+  },[data,syncNow]);
+
+  // 3) 같은 브라우저에서 탭이 여러 개 열려도 서로 오래된 메모리 state로 덮어쓰지 않는다.
+  //    BroadcastChannel은 데이터 자체를 보내지 않고 "IDB 다시 읽어" 신호만 보낸다.
+  useEffect(()=>{
+    let closed=false;
+    let bc=null;
+    async function pullLocal(){
+      const latest=await readDurableLocal();
+      if(closed) return;
+      const merged=mergeSyncData(dataRef.current,latest);
+      const persisted=await persistLocalMerged(merged);
+      if(!sameSnapshot(persisted,dataRef.current)) setDataRaw(persisted);
+    }
+
+    if(typeof BroadcastChannel!=="undefined"){
+      bc=new BroadcastChannel("studyos-sync-v2");
+      broadcastRef.current=bc;
+      bc.onmessage=e=>{
+        if(e?.data?.source===SESSION_ID) return;
+        if(e?.data?.type==="changed") pullLocal();
+      };
+    }
+    function onStorage(e){ if(e.key===STORAGE_KEY) pullLocal(); }
+    window.addEventListener("storage",onStorage);
+    return ()=>{
+      closed=true;
+      window.removeEventListener("storage",onStorage);
+      try { bc?.close(); } catch {}
+      if(broadcastRef.current===bc) broadcastRef.current=null;
+    };
   },[]);
 
-  // 로컬 저장은 즉시, 클라우드 저장은 1초 디바운스로 (너무 잦은 요청 방지)
+  // 4) 네트워크 복귀 시 "현재 메모리를 그냥 업로드"하지 않는다.
+  //    반드시 서버 최신본을 먼저 읽고 병합 + CAS 저장한다.
   useEffect(()=>{
-    save(data);
-    // 초기 동기화 과정에서 발생한 setData는 "사용자가 방금 수정한 것"이 아니므로
-    // 타임스탬프를 다시 찍어 클라우드에 재업로드하면 안 됨 — 그러면 단순히 앱을 연 것만으로도
-    // "마지막으로 연 기기"가 실제 최신 여부와 무관하게 항상 동기화 우선권을 갖게 되는 버그가 생김.
-    if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return; }
-    if (!initialSyncDone.current) return; // 초기 로드 직후 자기 자신 덮어쓰기 방지
-    if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
-    setSyncStatus("syncing");
-    cloudTimerRef.current = setTimeout(async () => {
-      const stamped = { ...data, _syncedAt: Date.now() };
-      save(stamped);
-      const ok = await cloudSave(stamped);
-      setSyncStatus(ok ? "synced" : "error");
-      if (ok) saveDailySnapshot(stamped);
-    }, 1000);
-    return () => { if (cloudTimerRef.current) clearTimeout(cloudTimerRef.current); };
-  },[data]);
-
-  // 오프라인 상태에서 등록한 오답/타이머 기록은 localStorage에 그대로 남아있고
-  // (cloudSave가 실패해도 조용히 넘어가도록 설계됨), 인터넷이 다시 연결되는 순간
-  // 자동으로 최신 로컬 데이터를 클라우드에 재전송해서 밀린 내용을 따라잡는다.
-  useEffect(()=>{
-    function handleOnline(){
-      if (!initialSyncDone.current) return;
-      setSyncStatus("syncing");
-      const stamped = { ...data, _syncedAt: Date.now() };
-      save(stamped);
-      cloudSave(stamped).then(ok => setSyncStatus(ok ? "synced" : "error"));
+    function handleOnline(){ if(initialSyncDone.current) syncNow(); }
+    function handleOffline(){
+      if(cloudTimerRef.current) clearTimeout(cloudTimerRef.current);
+      setSyncStatus("offline");
     }
-    function handleOffline(){ setSyncStatus("offline"); }
-    window.addEventListener("online", handleOnline);
-    window.addEventListener("offline", handleOffline);
-    return () => {
-      window.removeEventListener("online", handleOnline);
-      window.removeEventListener("offline", handleOffline);
+    function handleFocus(){
+      if(initialSyncDone.current && (typeof navigator==="undefined" || navigator.onLine!==false)) syncNow();
+    }
+    function handleVisible(){ if(document.visibilityState==="visible") handleFocus(); }
+    window.addEventListener("online",handleOnline);
+    window.addEventListener("offline",handleOffline);
+    window.addEventListener("focus",handleFocus);
+    document.addEventListener("visibilitychange",handleVisible);
+    return ()=>{
+      window.removeEventListener("online",handleOnline);
+      window.removeEventListener("offline",handleOffline);
+      window.removeEventListener("focus",handleFocus);
+      document.removeEventListener("visibilitychange",handleVisible);
     };
-  },[data]);
+  },[syncNow]);
 
   const addWrong=w=>setData(d=>({...d,wrongs:[...d.wrongs,w]}));
   const updateWrong=w=>setData(d=>({...d,wrongs:d.wrongs.map(e=>e.id===w.id?w:e)}));
@@ -2526,10 +3002,7 @@ export default function App() {
               {syncStatus==="syncing"?"동기화 중":syncStatus==="error"?"동기화 실패 (F12 콘솔 확인)":syncStatus==="offline"?"오프라인 (로컬 저장 중)":"동기화됨"}
             </span>
             {syncStatus==="error"&&(
-              <button onClick={()=>{
-                setSyncStatus("syncing");
-                cloudSave({...data,_syncedAt:Date.now()}).then(ok=>setSyncStatus(ok?"synced":"error"));
-              }} style={{background:"none",border:"1px solid #ef444450",borderRadius:5,color:"#ef4444",cursor:"pointer",fontSize:"0.6rem",padding:"0.05rem 0.4rem"}}>재시도</button>
+              <button onClick={()=>{ syncNow(); }} style={{background:"none",border:"1px solid #ef444450",borderRadius:5,color:"#ef4444",cursor:"pointer",fontSize:"0.6rem",padding:"0.05rem 0.4rem"}}>재시도</button>
             )}
           </div>
         </div>
