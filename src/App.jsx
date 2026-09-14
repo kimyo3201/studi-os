@@ -3,13 +3,26 @@ import { useState, useEffect, useRef, useCallback } from "react";
 // ── 상수 ──────────────────────────────────────────────────────────────────────
 const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학","기타"];
 
-// 계획 실패 사유 코드 — "실패" 뒤에 숨은 진짜 원인을 분리해서 보기 위함
+// 계획 실패 사유 코드 — 하루의 실패 원인을 한 번만 태깅해 여러 계획에 적용할 수 있음
 const FAIL_REASONS = {
-  TIME:       { label:"시간 부족", desc:"계획 자체가 과다했음", color:"#f59e0b" },
-  FATIGUE:    { label:"체력/집중력 소진", desc:"피곤해서 못함", color:"#ef4444" },
-  DIFFICULTY: { label:"예상보다 어려움", desc:"난이도 오판", color:"#a855f7" },
-  AVOID:      { label:"회피", desc:"하기 싫어서 미룸", color:"#dc2626" },
-  SKIP:       { label:"그냥 안 함", desc:"특별한 이유 없음", color:"#6b7280" },
+  TIME:       { label:"시간 부족/계획 과다", desc:"할 수 있는 시간보다 계획량이 많았음", color:"#f59e0b" },
+  FATIGUE:    { label:"체력/집중력 소진", desc:"피로·졸림·집중 붕괴로 수행하지 못함", color:"#ef4444" },
+  INTERRUPT:  { label:"돌발 일정/환경", desc:"예상하지 못한 일정·이동·환경 변수", color:"#06b6d4" },
+  DIFFICULTY: { label:"예상보다 어려움", desc:"난이도나 소요 시간을 과소평가함", color:"#a855f7" },
+  AVOID:      { label:"회피/딴짓", desc:"해야 했지만 미루거나 다른 행동으로 빠짐", color:"#dc2626" },
+  PRIORITY:   { label:"우선순위 변경", desc:"더 중요한 공부를 먼저 하느라 밀림", color:"#3b82f6" },
+  SKIP:       { label:"그냥 안 함", desc:"뚜렷한 외부 이유 없이 실행하지 않음", color:"#6b7280" },
+};
+
+// 계획을 "삭제"할 때도 이유를 남긴다. 화면에서는 사라지지만 plans2 안에는
+// 원본 계획은 실제 삭제(tombstone)하고 별도 삭제 로그를 남겨 리포트에서 원인을 분석한다.
+const DELETE_REASONS = {
+  TIME:         { label:"시간 부족", desc:"시간이 없어 이번 계획을 아예 제거", color:"#f59e0b" },
+  LOW_PRIORITY: { label:"중요도 낮음", desc:"지금 할 가치가 낮아 계획에서 제거", color:"#64748b" },
+  REPLACED:     { label:"다른 계획으로 대체", desc:"더 적절한 공부/계획으로 교체", color:"#3b82f6" },
+  NOT_NEEDED:   { label:"더 이상 필요 없음", desc:"이미 해결됐거나 할 필요가 없어짐", color:"#22c55e" },
+  DUPLICATE:    { label:"중복/잘못 추가", desc:"중복 등록 또는 입력 실수", color:"#a855f7" },
+  OTHER:        { label:"기타", desc:"위 항목에 해당하지 않음", color:"#6b7280" },
 };
 
 const SUBJECT_COLORS = {
@@ -918,13 +931,13 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
   );
 }
 
-// ── 계획 완료 체크 모달 (완료 누르면 반드시 거쳐야 함) ─────────────────────────────
-// 계획 실패 시 사유 선택 (실패 뒤에 숨은 진짜 원인 분리)
-function FailReasonModal({onSelect, onClose}) {
+// ── 계획 정리/사유 태깅 ──────────────────────────────────────────────────────────
+function ReasonPickerModal({title, reasons, onSelect, onClose, help}) {
   return (
-    <Modal title="❌ 왜 실패했어?" onClose={onClose}>
+    <Modal title={title} onClose={onClose}>
+      {help&&<div style={{color:"#6b7280",fontSize:"0.76rem",lineHeight:1.55,marginBottom:10}}>{help}</div>}
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
-        {Object.entries(FAIL_REASONS).map(([code,r])=>(
+        {Object.entries(reasons).map(([code,r])=>(
           <button key={code} onClick={()=>onSelect(code)} style={{
             display:"flex",flexDirection:"column",alignItems:"flex-start",gap:2,
             padding:"0.7rem 0.9rem",borderRadius:9,cursor:"pointer",textAlign:"left",
@@ -935,6 +948,71 @@ function FailReasonModal({onSelect, onClose}) {
           </button>
         ))}
       </div>
+    </Modal>
+  );
+}
+
+function BatchPlanReviewModal({date, plans, onApply, onClose}) {
+  const eligible=plans.filter(p=>p.status!=="done"&&p.status!=="deletedLog");
+  const defaultIdsFor=mode=>eligible.filter(p=>mode==="failed"?(p.status==="todo"||!p.failReason):p.status==="todo").map(p=>String(p.id));
+  const [mode,setMode]=useState("failed");
+  const [selected,setSelected]=useState(()=>new Set(defaultIdsFor("failed")));
+  const [reason,setReason]=useState("");
+  const reasons=mode==="failed"?FAIL_REASONS:DELETE_REASONS;
+
+  function changeMode(next){
+    setMode(next);
+    setReason("");
+    setSelected(new Set(defaultIdsFor(next)));
+  }
+  function toggle(id){
+    const k=String(id);
+    setSelected(prev=>{
+      const n=new Set(prev);
+      if(n.has(k))n.delete(k);else n.add(k);
+      return n;
+    });
+  }
+  const selectedCount=selected.size;
+  const allSelected=eligible.length>0&&selectedCount===eligible.length;
+
+  return (
+    <Modal title={`🧹 ${date} 계획 일괄 정리`} onClose={onClose} wide>
+      <div style={{color:"#9ca3af",fontSize:"0.77rem",lineHeight:1.6,marginBottom:10}}>
+        하루의 실패 원인이 같다면 <b style={{color:"#d1d5db"}}>계획들을 한 번에 선택하고 사유는 한 번만</b> 누르면 돼.
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:6,marginBottom:12}}>
+        <button onClick={()=>changeMode("failed")} style={{padding:"0.55rem",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:"0.78rem",border:`1px solid ${mode==="failed"?"#ef444460":"#1e2230"}`,background:mode==="failed"?"#ef444418":"#0a0c12",color:mode==="failed"?"#ef4444":"#6b7280"}}>❌ 실패 → 내일로</button>
+        <button onClick={()=>changeMode("deleted")} style={{padding:"0.55rem",borderRadius:8,cursor:"pointer",fontWeight:800,fontSize:"0.78rem",border:`1px solid ${mode==="deleted"?"#f59e0b60":"#1e2230"}`,background:mode==="deleted"?"#f59e0b18":"#0a0c12",color:mode==="deleted"?"#f59e0b":"#6b7280"}}>🗑 계획 삭제</button>
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+        <span style={{color:"#6b7280",fontSize:"0.7rem"}}>대상 계획 {selectedCount}/{eligible.length}</span>
+        <button onClick={()=>setSelected(allSelected?new Set():new Set(eligible.map(p=>String(p.id))))} style={{background:"none",border:"none",color:"#818cf8",fontSize:"0.7rem",cursor:"pointer"}}>{allSelected?"전체 해제":"전체 선택"}</button>
+      </div>
+      <div style={{maxHeight:240,overflowY:"auto",display:"flex",flexDirection:"column",gap:5,marginBottom:12}}>
+        {eligible.length===0&&<div style={{color:"#4b5563",fontSize:"0.8rem",padding:"1rem",textAlign:"center"}}>정리할 미완료 계획이 없어.</div>}
+        {eligible.map(p=>{
+          const checked=selected.has(String(p.id));
+          const c=SUBJECT_COLORS[p.subject];
+          const oldReason=p.failReason?FAIL_REASONS[p.failReason]:null;
+          return <button key={p.id} onClick={()=>toggle(p.id)} style={{display:"flex",alignItems:"center",gap:8,textAlign:"left",padding:"0.55rem 0.65rem",borderRadius:8,cursor:"pointer",background:checked?"#6366f112":"#0a0c12",border:`1px solid ${checked?"#6366f140":"#1e2230"}`}}>
+            <span style={{width:17,height:17,borderRadius:4,border:`1px solid ${checked?"#6366f1":"#374151"}`,background:checked?"#6366f1":"transparent",color:"white",fontSize:"0.68rem",display:"inline-flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{checked?"✓":""}</span>
+            <span style={{color:c?.text||"#a5b4fc",fontSize:"0.72rem",fontWeight:800,flexShrink:0}}>{p.subject}</span>
+            <span style={{color:"#d1d5db",fontSize:"0.76rem",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",flex:1}}>{p.content}</span>
+            {p.status==="failed"&&<span style={{color:oldReason?.color||"#ef4444",fontSize:"0.62rem",flexShrink:0}}>{oldReason?.label||"사유 미분류"}</span>}
+          </button>;
+        })}
+      </div>
+      <div style={{color:"#6b7280",fontSize:"0.7rem",marginBottom:6}}>공통 사유 — 한 번만 선택</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:6,marginBottom:12}}>
+        {Object.entries(reasons).map(([code,r])=>(
+          <button key={code} onClick={()=>setReason(code)} style={{padding:"0.55rem 0.6rem",borderRadius:8,cursor:"pointer",textAlign:"left",border:`1px solid ${reason===code?r.color+"80":"#1e2230"}`,background:reason===code?r.color+"18":"#0a0c12"}}>
+            <div style={{color:reason===code?r.color:"#9ca3af",fontSize:"0.73rem",fontWeight:800}}>{r.label}</div>
+            <div style={{color:"#4b5563",fontSize:"0.61rem",marginTop:1}}>{r.desc}</div>
+          </button>
+        ))}
+      </div>
+      <Btn full disabled={!reason||selectedCount===0} color={mode==="failed"?"#ef4444":"#f59e0b"} onClick={()=>{onApply([...selected],mode,reason);onClose();}}>{mode==="failed"?`선택 ${selectedCount}개 실패 처리 + 이월`:`선택 ${selectedCount}개 삭제`}</Btn>
     </Modal>
   );
 }
@@ -1019,87 +1097,34 @@ function SessionEditModal({plan, onSave, onClose}) {
 }
 
 function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStopTimer,onEditSessions}) {
-  const [failModalOpen,setFailModalOpen]=useState(false);
+  const [deleteModalOpen,setDeleteModalOpen]=useState(false);
   const [sessionModalOpen,setSessionModalOpen]=useState(false);
   const c=SUBJECT_COLORS[plan.subject];
-  const statusStyle = {
-    todo:  {bg:"#1e2230", color:"#6b7280", label:"예정"},
-    done:  {bg:"#22c55e20", color:"#22c55e", label:"✅ 완료"},
-    failed:{bg:"#ef444420", color:"#ef4444", label:"❌ 실패"},
-  }[plan.status]||{bg:"#1e2230",color:"#6b7280",label:"예정"};
-  const isRunning = activeTimer && activeTimer.planId===plan.id;
-  const failReason = plan.failReason ? FAIL_REASONS[plan.failReason] : null;
-
+  const statusStyle={todo:{bg:"#1e2230",color:"#6b7280",label:"예정"},done:{bg:"#22c55e20",color:"#22c55e",label:"✅ 완료"},failed:{bg:"#ef444420",color:"#ef4444",label:"❌ 실패"}}[plan.status]||{bg:"#1e2230",color:"#6b7280",label:"예정"};
+  const isRunning=activeTimer&&activeTimer.planId===plan.id;
+  const failReason=plan.failReason?FAIL_REASONS[plan.failReason]:null;
   return (
-    <div style={{background:"#0a0c12",border:`1px solid ${isRunning?(c?.bg||"#6366f1"):plan.status==="done"?"#22c55e30":plan.status==="failed"?"#ef444430":"#1e2230"}`,
-      borderRadius:11,padding:"0.85rem 1rem",marginBottom:6,opacity:plan.status==="done"?0.7:1}}>
+    <div style={{background:"#0a0c12",border:`1px solid ${isRunning?(c?.bg||"#6366f1"):plan.status==="done"?"#22c55e30":plan.status==="failed"?"#ef444430":"#1e2230"}`,borderRadius:11,padding:"0.85rem 1rem",marginBottom:6,opacity:plan.status==="done"?0.7:1}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:6}}>
         <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
           <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem"}}>{plan.subject}</span>
           <span style={{background:statusStyle.bg,color:statusStyle.color,fontSize:"0.7rem",padding:"0.12rem 0.5rem",borderRadius:99,fontWeight:700}}>{statusStyle.label}</span>
-          {failReason&&(
-            <span style={{background:`${failReason.color}20`,color:failReason.color,fontSize:"0.66rem",padding:"0.1rem 0.45rem",borderRadius:99,fontWeight:700}}>{failReason.label}</span>
-          )}
-          <button onClick={()=>setSessionModalOpen(true)} style={{
-            background: plan.totalMinutes>0 ? "#f59e0b18" : "transparent",
-            border:`1px solid ${plan.totalMinutes>0?"#f59e0b40":"#2a2d3a"}`,
-            borderRadius:99, padding:"0.1rem 0.5rem", cursor:"pointer",
-            color:plan.totalMinutes>0?"#f59e0b":"#4b5563",
-            fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700
-          }}>
-            ⏱ {plan.totalMinutes>0 ? `${Math.floor(plan.totalMinutes/60)>0?`${Math.floor(plan.totalMinutes/60)}h `:""}${plan.totalMinutes%60}m` : "시간 기록"}
-          </button>
+          {failReason&&<span style={{background:`${failReason.color}20`,color:failReason.color,fontSize:"0.66rem",padding:"0.1rem 0.45rem",borderRadius:99,fontWeight:700}}>{failReason.label}</span>}
+          {plan.status==="failed"&&!failReason&&<span style={{background:"#6b728020",color:"#9ca3af",fontSize:"0.64rem",padding:"0.1rem 0.45rem",borderRadius:99,fontWeight:700}}>사유 미분류</span>}
+          <button onClick={()=>setSessionModalOpen(true)} style={{background:plan.totalMinutes>0?"#f59e0b18":"transparent",border:`1px solid ${plan.totalMinutes>0?"#f59e0b40":"#2a2d3a"}`,borderRadius:99,padding:"0.1rem 0.5rem",cursor:"pointer",color:plan.totalMinutes>0?"#f59e0b":"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>⏱ {plan.totalMinutes>0?`${Math.floor(plan.totalMinutes/60)>0?`${Math.floor(plan.totalMinutes/60)}h `:""}${plan.totalMinutes%60}m`:"시간 기록"}</button>
         </div>
         <div style={{display:"flex",gap:5,flexShrink:0}}>
           <button onClick={()=>onEdit(plan)} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.7rem"}}>수정</button>
-          <button onClick={()=>onDelete(plan.id)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.82rem"}}>×</button>
+          <button onClick={()=>setDeleteModalOpen(true)} style={{background:"none",border:"none",color:"#2d3241",cursor:"pointer",fontSize:"0.82rem"}}>×</button>
         </div>
       </div>
       <div style={{color:plan.status==="done"?"#4b5563":"#d1d5db",fontSize:"0.82rem",lineHeight:1.6,marginBottom:plan.note?6:8,textDecoration:plan.status==="done"?"line-through":"none"}}>{plan.content}</div>
       {plan.note&&<div style={{color:"#4b5563",fontSize:"0.72rem",marginBottom:8}}>📌 {plan.note}</div>}
-
-      {/* 타이머 버튼 */}
-      {plan.status==="todo"&&onStartTimer&&(
-        <div style={{marginBottom:6}}>
-          {isRunning ? (
-            <button onClick={onStopTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444418",color:"#ef4444",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>■ 타이머 정지</button>
-          ) : (
-            <button onClick={()=>onStartTimer(plan)} disabled={!!activeTimer} style={{
-              width:"100%",padding:"0.4rem",borderRadius:7,
-              border:`1px solid ${activeTimer?"#2a2d3a":(c?.bg||"#6366f1")+"50"}`,
-              background:activeTimer?"transparent":(c?.bg||"#6366f1")+"18",
-              color:activeTimer?"#4b5563":(c?.text||"#a5b4fc"),
-              fontSize:"0.76rem",fontWeight:700,
-              cursor:activeTimer?"not-allowed":"pointer"
-            }}>{activeTimer?"다른 타이머 실행 중":"▶ 타이머 시작"}</button>
-          )}
-        </div>
-      )}
-
-      {/* 상태 버튼 */}
-      {plan.status==="todo"&&(
-        <div style={{display:"flex",gap:6}}>
-          <button onClick={()=>onStatus(plan.id,"done")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button>
-          <button onClick={()=>setFailModalOpen(true)} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button>
-        </div>
-      )}
-      {plan.status==="failed"&&(
-        <div style={{color:"#ef4444",fontSize:"0.7rem"}}>→ {nextDay(plan.date)}로 이동됨</div>
-      )}
-
-      {failModalOpen&&(
-        <FailReasonModal
-          onSelect={code=>{ onStatus(plan.id,"failed",code); setFailModalOpen(false); }}
-          onClose={()=>setFailModalOpen(false)}
-        />
-      )}
-      {sessionModalOpen&&(
-        <SessionEditModal
-          plan={plan}
-          onSave={sessions=>{ onEditSessions(plan.id, sessions); setSessionModalOpen(false); }}
-          onClose={()=>setSessionModalOpen(false)}
-        />
-      )}
+      {plan.status==="todo"&&onStartTimer&&<div style={{marginBottom:6}}>{isRunning?<button onClick={onStopTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444418",color:"#ef4444",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>■ 타이머 정지</button>:<button onClick={()=>onStartTimer(plan)} disabled={!!activeTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:`1px solid ${activeTimer?"#2a2d3a":(c?.bg||"#6366f1")+"50"}`,background:activeTimer?"transparent":(c?.bg||"#6366f1")+"18",color:activeTimer?"#4b5563":(c?.text||"#a5b4fc"),fontSize:"0.76rem",fontWeight:700,cursor:activeTimer?"not-allowed":"pointer"}}>{activeTimer?"다른 타이머 실행 중":"▶ 타이머 시작"}</button>}</div>}
+      {plan.status==="todo"&&<div style={{display:"flex",gap:6}}><button onClick={()=>onStatus(plan.id,"done")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button><button onClick={()=>onStatus(plan.id,"failed")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button></div>}
+      {plan.status==="failed"&&<div style={{color:"#ef4444",fontSize:"0.7rem"}}>→ {nextDay(plan.date)}로 이동됨</div>}
+      {deleteModalOpen&&<ReasonPickerModal title="🗑 이 계획을 왜 삭제해?" reasons={DELETE_REASONS} help="삭제 이유는 리포트용으로 남고, 계획 자체는 화면에서 사라져. 여러 계획은 '일괄 정리'에서 한 번에 처리할 수 있어." onSelect={code=>{onDelete(plan.id,code);setDeleteModalOpen(false);}} onClose={()=>setDeleteModalOpen(false)}/>} 
+      {sessionModalOpen&&<SessionEditModal plan={plan} onSave={sessions=>{onEditSessions(plan.id,sessions);setSessionModalOpen(false);}} onClose={()=>setSessionModalOpen(false)}/>} 
     </div>
   );
 }
@@ -1912,8 +1937,10 @@ function buildReportText(data, period) {
     byCodeSubject[k]=(byCodeSubject[k]||0)+1;
   }
 
-  // 계획 집계
-  const plans=(data.plans2||[]).filter(p=>new Date(p.date)>=cutoff);
+  // 계획 집계 — 원본 삭제는 tombstone으로 동기화하고, 삭제 이유는 date=0000-00-00인 별도 로그 item으로 보존
+  const allPlanRecords=(data.plans2||[]);
+  const deletedPlans=allPlanRecords.filter(p=>p.status==="deletedLog"&&(Number(p.deletedAt)||0)>=cutoff.getTime());
+  const plans=allPlanRecords.filter(p=>p.status!=="deletedLog"&&new Date(p.date)>=cutoff);
   const planDone=plans.filter(p=>p.status==="done").length;
   const planFailed=plans.filter(p=>p.status==="failed").length;
   const planTodo=plans.filter(p=>p.status==="todo").length;
@@ -1965,22 +1992,33 @@ function buildReportText(data, period) {
   });
   lines.push("");
   lines.push(`[계획 수행 현황]`);
-  lines.push(`고유 계획: ${uniquePlanCount}개 (이월 포함 총 시도 ${plans.length}회) | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개`);
+  lines.push(`고유 계획: ${uniquePlanCount}개 (이월 포함 총 시도 ${plans.length}회) | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개 | 삭제: ${deletedPlans.length}개`);
   if(uniquePlanCount>0) lines.push(`달성률: ${Math.round((planDone/uniquePlanCount)*100)}% (고유 계획 기준)`);
 
-  // 실패 사유별 집계 — "실패"라는 숫자 뒤에 숨은 진짜 원인 분리
+  // 실패는 같은 날 여러 계획이 같은 원인으로 무너지는 경우가 많으므로 "발생 일수" 중심으로 분석
   const failedPlans = plans.filter(p=>p.status==="failed");
   if(failedPlans.length>0){
     lines.push("");
-    lines.push(`[실패 사유 분석] 총 ${failedPlans.length}개`);
+    const failedDays=new Set(failedPlans.map(p=>p.date));
+    lines.push(`[실패 원인 분석] 실패 계획 ${failedPlans.length}개 · 실패 발생 ${failedDays.size}일`);
     const byReason={};
-    failedPlans.forEach(p=>{ const r=p.failReason||"미분류"; if(!byReason[r]) byReason[r]=[]; byReason[r].push(p); });
-    Object.entries(byReason).sort((a,b)=>b[1].length-a[1].length).forEach(([code,list])=>{
-      const label = FAIL_REASONS[code]?.label || code;
-      lines.push(`${label}: ${list.length}개 (${Math.round((list.length/failedPlans.length)*100)}%)`);
-      list.slice(0,5).forEach(p=>{
-        lines.push(`  - [${p.date}|${p.subject}] ${p.content.slice(0,30)}`);
-      });
+    failedPlans.forEach(p=>{const r=p.failReason||"미분류";if(!byReason[r])byReason[r]=[];byReason[r].push(p);});
+    Object.entries(byReason).sort((a,b)=>new Set(b[1].map(p=>p.date)).size-new Set(a[1].map(p=>p.date)).size||b[1].length-a[1].length).forEach(([code,list])=>{
+      const label=FAIL_REASONS[code]?.label||code;
+      const dayCount=new Set(list.map(p=>p.date)).size;
+      lines.push(`${label}: ${dayCount}일 · ${list.length}개 계획`);
+      [...new Set(list.map(p=>p.date))].slice(0,7).forEach(d=>lines.push(`  - ${d}: ${list.filter(p=>p.date===d).length}개`));
+    });
+  }
+  if(deletedPlans.length>0){
+    lines.push("");
+    lines.push(`[계획 삭제 이유] 총 ${deletedPlans.length}개`);
+    const byDeleteReason={};
+    deletedPlans.forEach(p=>{const r=p.deleteReason||"미분류";if(!byDeleteReason[r])byDeleteReason[r]=[];byDeleteReason[r].push(p);});
+    Object.entries(byDeleteReason).sort((a,b)=>b[1].length-a[1].length).forEach(([code,list])=>{
+      const label=DELETE_REASONS[code]?.label||code;
+      lines.push(`${label}: ${list.length}개 (${Math.round((list.length/deletedPlans.length)*100)}%)`);
+      list.slice(0,5).forEach(p=>lines.push(`  - [${p.originalDate||"?"}|${p.subject}] ${p.content.slice(0,30)}`));
     });
   }
 
@@ -2392,12 +2430,14 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
   const [planModal,setPlanModal]=useState(null);
   const [editPlan,setEditPlan]=useState(null);
   const [planView,setPlanView]=useState("day"); // day | week | month
+  const [batchReviewOpen,setBatchReviewOpen]=useState(false);
 
   const hours=Array.from({length:TOTAL_HOURS},(_,i)=>(START_HOUR+i)%24);
   const daySlots=data.timetable[date]||{};
   const totalMins=calcMinutes(daySlots);
   const subMins=calcSubjectMinutes(daySlots);
-  const dayPlans=(data.plans2||[]).filter(p=>p.date===date).sort((a,b)=>a.subject.localeCompare(b.subject));
+  const dayPlans=(data.plans2||[]).filter(p=>p.date===date&&p.status!=="deletedLog").sort((a,b)=>a.subject.localeCompare(b.subject));
+  const batchEligiblePlans=dayPlans.filter(p=>p.status!=="done");
 
   function paint(si){
     setData(d=>{const tt={...d.timetable};const day={...(tt[date]||{})};
@@ -2416,7 +2456,32 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
       if(idx>=0)list[idx]=p; else list.push(p);
       return {...d,plans2:list};});
   }
-  function deletePlan(id){setData(d=>({...d,plans2:(d.plans2||[]).filter(p=>p.id!==id)}));}
+  function deletePlan(id,deleteReason){
+    if(activeTimer?.planId===id){ alert("실행 중인 계획은 타이머를 먼저 정지해줘."); return; }
+    setData(d=>{
+      const list=[...(d.plans2||[])];
+      const idx=list.findIndex(p=>p.id===id);
+      if(idx<0)return d;
+      const plan=list[idx];
+      const deletedAt=Date.now();
+      const log={
+        id:`__deleted__${String(plan.id)}__${deletedAt}__${makeRandomId()}`,
+        status:"deletedLog",
+        date:"0000-00-00", // 구버전 UI에서도 일반 계획으로 노출되지 않게 숨김
+        originalDate:plan.date,
+        originalPlanId:plan.id,
+        rootId:plan.rootId||plan.id,
+        subject:plan.subject,
+        content:plan.content,
+        previousStatus:plan.status,
+        deleteReason:deleteReason||"OTHER",
+        deletedAt,
+      };
+      list.splice(idx,1); // 원본은 진짜 삭제 → 동기화 엔진이 tombstone 생성
+      list.push(log);     // 삭제 이유는 별도 로그 item으로 안전하게 보존
+      return {...d,plans2:list};
+    });
+  }
   function setStatus(id,status,failReason){
     setData(d=>{
       const list=[...(d.plans2||[])];
@@ -2435,6 +2500,48 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
         }
       }
       return {...d,plans2:list};});
+  }
+
+  function applyBatchPlanAction(ids,mode,reason){
+    const idSet=new Set(ids.map(String));
+    if(activeTimer&&idSet.has(String(activeTimer.planId))){ alert("실행 중인 계획이 포함돼 있어. 타이머를 먼저 정지한 뒤 다시 해줘."); return; }
+    setData(d=>{
+      const list=[...(d.plans2||[])];
+      for(const idStr of idSet){
+        const idx=list.findIndex(p=>String(p.id)===idStr);
+        if(idx<0)continue;
+        const original=list[idx];
+        if(original.status==="done"||original.status==="deletedLog")continue;
+        if(mode==="deleted"){
+          const deletedAt=Date.now();
+          const log={
+            id:`__deleted__${String(original.id)}__${deletedAt}__${makeRandomId()}`,
+            status:"deletedLog",
+            date:"0000-00-00",
+            originalDate:original.date,
+            originalPlanId:original.id,
+            rootId:original.rootId||original.id,
+            subject:original.subject,
+            content:original.content,
+            previousStatus:original.status,
+            deleteReason:reason||"OTHER",
+            deletedAt,
+          };
+          list.splice(idx,1);
+          list.push(log);
+          continue;
+        }
+        const plan={...original,status:"failed",failReason:reason};
+        list[idx]=plan;
+        const tom=nextDay(plan.date);
+        if(!list.some(p=>p.id===plan.id+"_m_"+tom)){
+          const {totalMinutes,sessions,failReason:_fr,deleteReason:_dr,deletedAt:_da,previousStatus:_ps,...rest}=plan;
+          const rootId=plan.rootId||plan.id;
+          list.push({...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",rootId,note:"[이월] "+plan.content.slice(0,30)});
+        }
+      }
+      return {...d,plans2:list};
+    });
   }
 
   // 세션(공부 시간 구간) 수동 수정 — 계획의 totalMinutes 재계산 + 그 계획이
@@ -2574,7 +2681,10 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
                   fontSize:"0.7rem",fontWeight:700}}>{l}</button>
               ))}
             </div>
-            {planView==="day"&&<Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 계획 추가</Btn>}
+            {planView==="day"&&<div style={{display:"flex",gap:5}}>
+              {batchEligiblePlans.length>0&&<Btn small outline color="#f59e0b" onClick={()=>setBatchReviewOpen(true)}>🧹 일괄 정리</Btn>}
+              <Btn small color="#6366f1" onClick={()=>{setEditPlan(null);setPlanModal("add");}}>+ 계획 추가</Btn>
+            </div>}
           </div>
 
           {planView==="day"&&(
@@ -2584,6 +2694,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
                   오늘 계획 <span style={{color:"#6366f1"}}>{dayPlans.length}개</span>
                   <span style={{color:"#22c55e",marginLeft:6}}>✅{dayPlans.filter(p=>p.status==="done").length}</span>
                   <span style={{color:"#ef4444",marginLeft:4}}>❌{dayPlans.filter(p=>p.status==="failed").length}</span>
+                  {dayPlans.some(p=>p.status==="failed"&&!p.failReason)&&<span style={{color:"#f59e0b",marginLeft:5}}>사유 미분류 {dayPlans.filter(p=>p.status==="failed"&&!p.failReason).length}</span>}
                 </span>
               </div>
               {dayPlans.length===0
@@ -2605,7 +2716,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
             const mon=new Date(dt); mon.setDate(dt.getDate()-(day===0?6:day-1));
             const weekDates=Array.from({length:7},(_,i)=>{const x=new Date(mon);x.setDate(mon.getDate()+i);return x.toISOString().slice(0,10);});
             const DAY_KO=["월","화","수","목","금","토","일"];
-            const weekPlans=(data.plans2||[]).filter(p=>weekDates.includes(p.date));
+            const weekPlans=(data.plans2||[]).filter(p=>weekDates.includes(p.date)&&p.status!=="deletedLog");
             return (
               <div>
                 <div style={{color:"#4b5563",fontSize:"0.72rem",marginBottom:8}}>
@@ -2634,7 +2745,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
 
           {planView==="month"&&(()=>{
             const ym=date.slice(0,7);
-            const monthPlans=(data.plans2||[]).filter(p=>p.date.startsWith(ym));
+            const monthPlans=(data.plans2||[]).filter(p=>p.date.startsWith(ym)&&p.status!=="deletedLog");
             const bySubj={};
             for(const p of monthPlans){bySubj[p.subject]=(bySubj[p.subject]||0)+1;}
             const done=monthPlans.filter(p=>p.status==="done").length;
@@ -2667,6 +2778,10 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
           })()}
         </div>
       </div>
+
+      {batchReviewOpen&&(
+        <BatchPlanReviewModal date={date} plans={dayPlans} onApply={applyBatchPlanAction} onClose={()=>setBatchReviewOpen(false)}/>
+      )}
 
       {(planModal==="add"||planModal==="edit")&&(
         <PlanForm editData={planModal==="edit"?editPlan:null} defaultDate={date}
@@ -2704,7 +2819,7 @@ function CalendarView({data,setData,onSelectDate}) {
   })).filter(g=>g.items.length>0);
 
   const selDateStr = selectedDay ? ds(selectedDay) : null;
-  const selDayPlans = selDateStr ? (data.plans2||[]).filter(p=>p.date===selDateStr) : [];
+  const selDayPlans = selDateStr ? (data.plans2||[]).filter(p=>p.date===selDateStr&&p.status!=="deletedLog") : [];
 
   return (
     <div>
@@ -2762,7 +2877,7 @@ function CalendarView({data,setData,onSelectDate}) {
           const mins=calcMinutes(slots);
           const subMins=calcSubjectMinutes(slots);
           const topSub=Object.entries(subMins).sort((a,b)=>b[1]-a[1])[0]?.[0];
-          const plans=(data.plans2||[]).filter(p=>p.date===dateStr);
+          const plans=(data.plans2||[]).filter(p=>p.date===dateStr&&p.status!=="deletedLog");
           const done=plans.filter(p=>p.status==="done").length;
           const failed=plans.filter(p=>p.status==="failed").length;
           const isToday=dateStr===today;
@@ -2833,7 +2948,7 @@ function CalendarView({data,setData,onSelectDate}) {
           }
           const total=Object.values(monthSubMins).reduce((a,b)=>a+b,0)||1;
           const sorted=Object.entries(monthSubMins).sort((a,b)=>b[1]-a[1]);
-          const mp=(data.plans2||[]).filter(p=>p.date.startsWith(year+"-"+String(month+1).padStart(2,"0")));
+          const mp=(data.plans2||[]).filter(p=>p.date.startsWith(year+"-"+String(month+1).padStart(2,"0"))&&p.status!=="deletedLog");
           const rate=mp.length>0?Math.round((mp.filter(p=>p.status==="done").length/mp.length)*100):null;
           return <>
             {sorted.slice(0,5).map(([sub,m])=>{
