@@ -2972,6 +2972,36 @@ function CalendarView({data,setData,onSelectDate}) {
 }
 
 
+// ── 계획 외 공부 타이머 ────────────────────────────────────────────────────────
+function AdhocStudyTimerModal({onStart,onClose,activeTimer}) {
+  const [subject,setSubject]=useState("수학");
+  const [content,setContent]=useState("");
+  const blocked=!!activeTimer;
+  return (
+    <Modal title="▶ 계획 외 공부 시작" onClose={onClose}>
+      <div style={{color:"#9ca3af",fontSize:"0.78rem",lineHeight:1.6,marginBottom:"1rem"}}>
+        오늘 계획에 없던 공부도 바로 타이머를 켤 수 있어. 정지하면 기존 타이머와 똑같이 타임테이블에 자동 기록돼.
+      </div>
+      <div style={{marginBottom:"0.9rem"}}>
+        <Lbl>과목</Lbl>
+        <select value={subject} onChange={e=>setSubject(e.target.value)} style={inp}>
+          {SUBJECTS.map(s=><option key={s} value={s}>{s}</option>)}
+        </select>
+      </div>
+      <div style={{marginBottom:"1rem"}}>
+        <Lbl>무슨 공부인지 (선택)</Lbl>
+        <input value={content} onChange={e=>setContent(e.target.value)} style={inp} placeholder="예: 수학 오답 복습, 영어 단어 30분"/>
+      </div>
+      {blocked&&<div style={{color:"#ef4444",fontSize:"0.75rem",marginBottom:"0.8rem"}}>이미 다른 타이머가 실행 중이야. 먼저 기존 타이머를 정지해줘.</div>}
+      <Btn full disabled={blocked} onClick={()=>{
+        if(blocked)return;
+        onStart(subject,content.trim()||"계획 외 공부");
+        onClose();
+      }}>▶ 계획 외 공부 시작</Btn>
+    </Modal>
+  );
+}
+
 // ── 메인 ──────────────────────────────────────────────────────────────────────
 export default function App() {
   // 화면 state와 저장 state를 분리한다. UI에서 일어나는 모든 setData는 아래 래퍼를 통해
@@ -3030,7 +3060,18 @@ export default function App() {
   },[activeTimer]);
 
   function startTimer(plan){
-    setActiveTimer({planId:plan.id, subject:plan.subject, content:plan.content, startedAt:Date.now(), date:plan.date});
+    setActiveTimer({planId:plan.id, subject:plan.subject, content:plan.content, startedAt:Date.now(), date:plan.date, adhoc:false});
+  }
+  function startAdhocTimer(subject,content){
+    if(activeTimer) return;
+    setActiveTimer({
+      planId:null,
+      adhoc:true,
+      subject,
+      content:content||"계획 외 공부",
+      startedAt:Date.now(),
+      date:studyDayStr(),
+    });
   }
   function stopTimer(){
     if(!activeTimer) return;
@@ -3055,8 +3096,9 @@ export default function App() {
           day[si]=activeTimer.subject;
         }
         tt[dateStr]=day;
-        // 이 계획에 실행 시간 누적 + 실행 이력 기록
-        const plans=(d.plans2||[]).map(p=>{
+        // 계획 타이머라면 해당 계획에 실행 시간을 누적한다.
+        // 계획 외 공부(adhoc)는 타임테이블에만 기록해서 기존 계획 데이터에는 손대지 않는다.
+        const plans=activeTimer.planId==null ? (d.plans2||[]) : (d.plans2||[]).map(p=>{
           if(p.id!==activeTimer.planId) return p;
           const sessions=[...(p.sessions||[]), { date:dateStr, minutes:elapsedMin, startedAt:activeTimer.startedAt, endedAt:Date.now() }];
           return { ...p, totalMinutes:(p.totalMinutes||0)+elapsedMin, sessions };
@@ -3322,6 +3364,7 @@ export default function App() {
           </div>
         </div>
         <div style={{display:"flex",gap:6,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          <Btn small outline color="#22c55e" disabled={!!activeTimer} onClick={()=>setModal("adhocTimer")}>▶ 계획 외 공부</Btn>
           <Btn small color="#ef4444" onClick={()=>{setEditWrong(null);setModal("wrong");}}>오답 등록</Btn>
           <Btn small outline color="#4b5563" onClick={()=>setModal("backup")}>백업</Btn>
         </div>
@@ -3336,6 +3379,7 @@ export default function App() {
         }}>
           <span style={{width:8,height:8,borderRadius:"50%",background:c?.bg||"#6366f1",animation:"pulse 1.5s infinite",flexShrink:0}}/>
           <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem"}}>{activeTimer.subject}</span>
+          {activeTimer.adhoc&&<span style={{background:"#22c55e18",border:"1px solid #22c55e40",color:"#22c55e",borderRadius:99,padding:"0.08rem 0.45rem",fontSize:"0.64rem",fontWeight:800}}>계획 외</span>}
           <span style={{color:"#9ca3af",fontSize:"0.8rem",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{activeTimer.content}</span>
           <span style={{color:c?.bg||"#6366f1",fontSize:"1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{timerElapsedLabel()}</span>
           <button onClick={stopTimer} style={{
@@ -3395,6 +3439,7 @@ export default function App() {
       </main>
 
       {/* 모달 */}
+      {modal==="adhocTimer"&&<AdhocStudyTimerModal activeTimer={activeTimer} onStart={startAdhocTimer} onClose={()=>setModal(null)}/>}
       {modal==="wrong"&&<WrongForm editData={editWrong} onSave={w=>{editWrong?updateWrong(w):addWrong(w);setModal(null);setEditWrong(null);}} onClose={()=>{setModal(null);setEditWrong(null);}} onDelete={id=>{delWrong(id);setModal(null);setEditWrong(null);}}/>}
       {modal==="backup"&&<BackupModal data={data} onImport={d=>setData(d)} onClose={()=>setModal(null)}/>}
       {modal==="report"&&<ReportExport data={data} onClose={()=>setModal(null)}/>}
