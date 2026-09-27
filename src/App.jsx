@@ -1096,9 +1096,33 @@ function SessionEditModal({plan, onSave, onClose}) {
   );
 }
 
-function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStopTimer,onEditSessions}) {
+function FocusReturnCompleteModal({plan,onConfirm,onClose}) {
+  const [count,setCount]=useState(String(Number(plan.focusReturnCount)||0));
+  const parsed=count.trim()===""?null:Math.max(0,Math.floor(Number(count)));
+  const valid=Number.isFinite(parsed);
+  return (
+    <Modal title="✅ 완료 전 집중 복귀 횟수" onClose={onClose}>
+      <div style={{color:"#9ca3af",fontSize:"0.8rem",lineHeight:1.7,marginBottom:"1rem"}}>
+        이 계획을 끝내기 전에 <b style={{color:"#d1d5db"}}>딴생각·주의 이탈을 알아차리고 공부로 돌아온 횟수</b>를 확정해줘.
+        이미 계획 카드의 <b style={{color:"#818cf8"}}>↩ 복귀 +1</b>로 누른 횟수가 자동으로 들어가 있어.
+      </div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:"0.8rem"}}>
+        <button onClick={()=>setCount(String(Math.max(0,(valid?parsed:0)-1)))} style={{width:42,height:42,borderRadius:9,border:"1px solid #2a2d3a",background:"#111318",color:"#9ca3af",cursor:"pointer",fontSize:"1.1rem",fontWeight:800}}>−</button>
+        <input autoFocus inputMode="numeric" pattern="[0-9]*" value={count} onChange={e=>{const v=e.target.value;if(v===""||/^\d+$/.test(v))setCount(v);}}
+          onKeyDown={e=>{if(e.key==="Enter"&&valid)onConfirm(parsed);}}
+          style={{...inp,textAlign:"center",fontSize:"1.25rem",fontWeight:900,fontFamily:"'JetBrains Mono',monospace"}} placeholder="0"/>
+        <button onClick={()=>setCount(String((valid?parsed:0)+1))} style={{width:42,height:42,borderRadius:9,border:"1px solid #6366f150",background:"#6366f118",color:"#818cf8",cursor:"pointer",fontSize:"1.1rem",fontWeight:800}}>+</button>
+      </div>
+      <div style={{color:"#4b5563",fontSize:"0.7rem",marginBottom:"1rem",textAlign:"center"}}>0회도 반드시 확정해야 완료돼.</div>
+      <Btn full disabled={!valid} onClick={()=>valid&&onConfirm(parsed)}>집중 복귀 {valid?parsed:0}회로 완료 확정</Btn>
+    </Modal>
+  );
+}
+
+function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStopTimer,onEditSessions,onFocusReturn}) {
   const [deleteModalOpen,setDeleteModalOpen]=useState(false);
   const [sessionModalOpen,setSessionModalOpen]=useState(false);
+  const [completeModalOpen,setCompleteModalOpen]=useState(false);
   const c=SUBJECT_COLORS[plan.subject];
   const statusStyle={todo:{bg:"#1e2230",color:"#6b7280",label:"예정"},done:{bg:"#22c55e20",color:"#22c55e",label:"✅ 완료"},failed:{bg:"#ef444420",color:"#ef4444",label:"❌ 실패"}}[plan.status]||{bg:"#1e2230",color:"#6b7280",label:"예정"};
   const isRunning=activeTimer&&activeTimer.planId===plan.id;
@@ -1112,6 +1136,7 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
           {failReason&&<span style={{background:`${failReason.color}20`,color:failReason.color,fontSize:"0.66rem",padding:"0.1rem 0.45rem",borderRadius:99,fontWeight:700}}>{failReason.label}</span>}
           {plan.status==="failed"&&!failReason&&<span style={{background:"#6b728020",color:"#9ca3af",fontSize:"0.64rem",padding:"0.1rem 0.45rem",borderRadius:99,fontWeight:700}}>사유 미분류</span>}
           <button onClick={()=>setSessionModalOpen(true)} style={{background:plan.totalMinutes>0?"#f59e0b18":"transparent",border:`1px solid ${plan.totalMinutes>0?"#f59e0b40":"#2a2d3a"}`,borderRadius:99,padding:"0.1rem 0.5rem",cursor:"pointer",color:plan.totalMinutes>0?"#f59e0b":"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>⏱ {plan.totalMinutes>0?`${Math.floor(plan.totalMinutes/60)>0?`${Math.floor(plan.totalMinutes/60)}h `:""}${plan.totalMinutes%60}m`:"시간 기록"}</button>
+          <span style={{background:(plan.focusReturnCount||0)>0?"#6366f118":"transparent",border:`1px solid ${(plan.focusReturnCount||0)>0?"#6366f140":"#2a2d3a"}`,borderRadius:99,padding:"0.1rem 0.5rem",color:(plan.focusReturnCount||0)>0?"#818cf8":"#4b5563",fontSize:"0.68rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>↩ 복귀 {plan.focusReturnCount||0}</span>
         </div>
         <div style={{display:"flex",gap:5,flexShrink:0}}>
           <button onClick={()=>onEdit(plan)} style={{background:"none",border:"none",color:"#4b5563",cursor:"pointer",fontSize:"0.7rem"}}>수정</button>
@@ -1121,8 +1146,10 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
       <div style={{color:plan.status==="done"?"#4b5563":"#d1d5db",fontSize:"0.82rem",lineHeight:1.6,marginBottom:plan.note?6:8,textDecoration:plan.status==="done"?"line-through":"none"}}>{plan.content}</div>
       {plan.note&&<div style={{color:"#4b5563",fontSize:"0.72rem",marginBottom:8}}>📌 {plan.note}</div>}
       {plan.status==="todo"&&onStartTimer&&<div style={{marginBottom:6}}>{isRunning?<button onClick={onStopTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444418",color:"#ef4444",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>■ 타이머 정지</button>:<button onClick={()=>onStartTimer(plan)} disabled={!!activeTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:`1px solid ${activeTimer?"#2a2d3a":(c?.bg||"#6366f1")+"50"}`,background:activeTimer?"transparent":(c?.bg||"#6366f1")+"18",color:activeTimer?"#4b5563":(c?.text||"#a5b4fc"),fontSize:"0.76rem",fontWeight:700,cursor:activeTimer?"not-allowed":"pointer"}}>{activeTimer?"다른 타이머 실행 중":"▶ 타이머 시작"}</button>}</div>}
-      {plan.status==="todo"&&<div style={{display:"flex",gap:6}}><button onClick={()=>onStatus(plan.id,"done")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button><button onClick={()=>onStatus(plan.id,"failed")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button></div>}
+      {plan.status==="todo"&&onFocusReturn&&<button onClick={()=>onFocusReturn(plan.id)} style={{width:"100%",marginBottom:6,padding:"0.42rem",borderRadius:7,border:"1px solid #6366f145",background:"#6366f112",color:"#818cf8",fontSize:"0.76rem",fontWeight:800,cursor:"pointer"}}>↩ 딴생각에서 복귀 +1 <span style={{fontFamily:"'JetBrains Mono',monospace",marginLeft:4}}>({plan.focusReturnCount||0})</span></button>}
+      {plan.status==="todo"&&<div style={{display:"flex",gap:6}}><button onClick={()=>{if(isRunning){alert("계획을 완료하려면 타이머를 먼저 정지해줘.");return;}setCompleteModalOpen(true);}} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button><button onClick={()=>onStatus(plan.id,"failed")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button></div>}
       {plan.status==="failed"&&<div style={{color:"#ef4444",fontSize:"0.7rem"}}>→ {nextDay(plan.date)}로 이동됨</div>}
+      {completeModalOpen&&<FocusReturnCompleteModal plan={plan} onConfirm={count=>{onStatus(plan.id,"done",null,{focusReturnCount:count,focusReturnFinalizedAt:Date.now()});setCompleteModalOpen(false);}} onClose={()=>setCompleteModalOpen(false)}/>}
       {deleteModalOpen&&<ReasonPickerModal title="🗑 이 계획을 왜 삭제해?" reasons={DELETE_REASONS} help="삭제 이유는 리포트용으로 남고, 계획 자체는 화면에서 사라져. 여러 계획은 '일괄 정리'에서 한 번에 처리할 수 있어." onSelect={code=>{onDelete(plan.id,code);setDeleteModalOpen(false);}} onClose={()=>setDeleteModalOpen(false)}/>} 
       {sessionModalOpen&&<SessionEditModal plan={plan} onSave={sessions=>{onEditSessions(plan.id,sessions);setSessionModalOpen(false);}} onClose={()=>setSessionModalOpen(false)}/>} 
     </div>
@@ -1994,6 +2021,14 @@ function buildReportText(data, period) {
   lines.push(`[계획 수행 현황]`);
   lines.push(`고유 계획: ${uniquePlanCount}개 (이월 포함 총 시도 ${plans.length}회) | 완료: ${planDone}개 | 실패: ${planFailed}개 | 예정: ${planTodo}개 | 삭제: ${deletedPlans.length}개`);
   if(uniquePlanCount>0) lines.push(`달성률: ${Math.round((planDone/uniquePlanCount)*100)}% (고유 계획 기준)`);
+  const focusReturnPlans=plans.filter(p=>Number.isFinite(Number(p.focusReturnCount))&&Number(p.focusReturnCount)>=0&&(p.status==="done"||Number(p.focusReturnCount)>0));
+  if(focusReturnPlans.length>0){
+    const totalFocusReturns=focusReturnPlans.reduce((sum,p)=>sum+(Number(p.focusReturnCount)||0),0);
+    lines.push(`집중 복귀: 총 ${totalFocusReturns}회 · 기록 계획 ${focusReturnPlans.length}개 · 계획당 평균 ${(totalFocusReturns/focusReturnPlans.length).toFixed(1)}회`);
+    [...focusReturnPlans].sort((a,b)=>(Number(b.focusReturnCount)||0)-(Number(a.focusReturnCount)||0)).slice(0,10).forEach(p=>{
+      lines.push(`  - [${p.date}|${p.subject}] 복귀 ${Number(p.focusReturnCount)||0}회 · ${p.content.slice(0,35)}`);
+    });
+  }
 
   // 실패는 같은 날 여러 계획이 같은 원인으로 무너지는 경우가 많으므로 "발생 일수" 중심으로 분석
   const failedPlans = plans.filter(p=>p.status==="failed");
@@ -2482,11 +2517,11 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
       return {...d,plans2:list};
     });
   }
-  function setStatus(id,status,failReason){
+  function setStatus(id,status,failReason,extraPatch={}){
     setData(d=>{
       const list=[...(d.plans2||[])];
       const idx=list.findIndex(x=>x.id===id);if(idx<0)return d;
-      const plan={...list[idx],status};
+      const plan={...list[idx],...extraPatch,status};
       if(status==="failed"&&failReason) plan.failReason=failReason;
       list[idx]=plan;
       if(status==="failed"){
@@ -2494,7 +2529,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
         if(!list.some(p=>p.id===plan.id+"_m_"+tom)){
           // 이월본은 "내일 다시 할 계획"일 뿐, 오늘 이미 기록된 공부시간·실패사유까지 복사하면 안 됨
           // rootId는 최초 원본을 계속 이어받아서, 며칠 연속 실패해도 "같은 계획의 반복 시도"로 추적 가능
-          const { totalMinutes, sessions, failReason:_fr, ...rest } = plan;
+          const { totalMinutes, sessions, failReason:_fr, focusReturnCount:_focusReturnCount, focusReturnFinalizedAt:_focusReturnFinalizedAt, ...rest } = plan;
           const rootId = plan.rootId || plan.id;
           list.push({...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",rootId,note:"[이월] "+plan.content.slice(0,30)});
         }
@@ -2542,6 +2577,10 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
       }
       return {...d,plans2:list};
     });
+  }
+
+  function incrementFocusReturn(id){
+    setData(d=>({...d,plans2:(d.plans2||[]).map(p=>p.id===id&&p.status==="todo"?{...p,focusReturnCount:(p.focusReturnCount||0)+1}:p)}));
   }
 
   // 세션(공부 시간 구간) 수동 수정 — 계획의 totalMinutes 재계산 + 그 계획이
@@ -2702,7 +2741,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
                 :dayPlans.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus}
                     onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}
                     activeTimer={activeTimer} onStartTimer={onStartTimer} onStopTimer={onStopTimer}
-                    onEditSessions={editSessions}/>)
+                    onEditSessions={editSessions} onFocusReturn={incrementFocusReturn}/>)
               }
               <NightNoteCard date={date} note={(data.nightNotes||{})[date]}
                 onSave={text=>setData(d=>({...d, nightNotes:{...(d.nightNotes||{}), [date]:text}}))}
@@ -2734,7 +2773,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
                       </div>
                       {wp.map(p=><PlanCard key={p.id} plan={p} onStatus={setStatus} onEdit={p=>{setEditPlan(p);setPlanModal("edit");}} onDelete={deletePlan}
                         activeTimer={activeTimer} onStartTimer={onStartTimer} onStopTimer={onStopTimer}
-                        onEditSessions={editSessions}/>)}
+                        onEditSessions={editSessions} onFocusReturn={incrementFocusReturn}/>)}
                     </div>
                   );
                 })}
@@ -3108,6 +3147,12 @@ export default function App() {
     }
     setActiveTimer(null);
   }
+  function incrementActivePlanFocusReturn(){
+    if(!activeTimer || activeTimer.planId==null) return;
+    const planId=activeTimer.planId;
+    setData(d=>({...d,plans2:(d.plans2||[]).map(p=>p.id===planId&&p.status==="todo"?{...p,focusReturnCount:(p.focusReturnCount||0)+1}:p)}));
+  }
+
   function timerElapsedLabel(){
     if(!activeTimer) return "";
     const sec=Math.floor((Date.now()-activeTimer.startedAt)/1000);
@@ -3381,6 +3426,7 @@ export default function App() {
           <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.82rem"}}>{activeTimer.subject}</span>
           {activeTimer.adhoc&&<span style={{background:"#22c55e18",border:"1px solid #22c55e40",color:"#22c55e",borderRadius:99,padding:"0.08rem 0.45rem",fontSize:"0.64rem",fontWeight:800}}>계획 외</span>}
           <span style={{color:"#9ca3af",fontSize:"0.8rem",flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{activeTimer.content}</span>
+          {!activeTimer.adhoc&&(()=>{const p=(data.plans2||[]).find(x=>x.id===activeTimer.planId);return <button onClick={incrementActivePlanFocusReturn} style={{background:"#6366f118",border:"1px solid #6366f145",borderRadius:8,color:"#818cf8",cursor:"pointer",fontSize:"0.72rem",fontWeight:800,padding:"0.3rem 0.65rem",flexShrink:0}}>↩ 복귀 +1 ({p?.focusReturnCount||0})</button>;})()}
           <span style={{color:c?.bg||"#6366f1",fontSize:"1rem",fontWeight:800,fontFamily:"'JetBrains Mono',monospace",flexShrink:0}}>{timerElapsedLabel()}</span>
           <button onClick={stopTimer} style={{
             background:"#ef4444",border:"none",borderRadius:8,color:"white",cursor:"pointer",
