@@ -75,6 +75,7 @@ const initialData = {
   monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
   nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
+  analogRecords: [],     // 손글씨 시/공부 일기 사진: { id, date, kind:"poem"|"diary", photo, createdAt }
 };
 
 // ISO 주차 키 계산 (월요일 시작 기준)
@@ -123,7 +124,7 @@ const LEGACY_IDB_NAME = "studyos_v2";
 const IDB_STORE = "state";
 const IDB_KEY = "main";
 const CLIENT_ID_KEY = "studyos_client_id_v2";
-const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems"];
+const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords"];
 const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes"];
 const TIMETABLE_FIELD = "timetable";
 
@@ -180,6 +181,7 @@ function normalizeDataShape(d) {
     weekGoals: src.weekGoals || {},
     monthGoals: src.monthGoals || {},
     goalItems: Array.isArray(src.goalItems) ? src.goalItems : [],
+    analogRecords: Array.isArray(src.analogRecords) ? src.analogRecords : [],
     nightNotes: src.nightNotes || {},
     plans2: Array.isArray(src.plans2) ? src.plans2 : [],
   };
@@ -202,6 +204,7 @@ function isEffectivelyEmpty(d) {
     (d.wrongs||[]).length===0 &&
     (d.plans2||[]).length===0 &&
     (d.goalItems||[]).length===0 &&
+    (d.analogRecords||[]).length===0 &&
     Object.keys(d.nightNotes||{}).length===0 &&
     Object.keys(d.folderNames||{}).length===0 &&
     Object.keys(d.weekGoals||{}).length===0 &&
@@ -545,6 +548,10 @@ function stripHeavyData(d) {
     wrongs: (d.wrongs||[]).map(w => {
       const { photo, ...rest } = w;
       return photo ? { ...rest, _hasPhoto: true } : w;
+    }),
+    analogRecords: (d.analogRecords||[]).map(r => {
+      const { photo, ...rest } = r;
+      return photo ? { ...rest, _hasPhoto: true } : r;
     }),
   };
 }
@@ -1325,6 +1332,86 @@ function InAppCamera({ onCapture, onClose }) {
       </div>
     </div>
   );
+}
+
+function compressImageFile(file, maxWidth=1400, quality=0.82) {
+  return new Promise((resolve,reject)=>{
+    if(!file?.type?.startsWith("image/")){ reject(new Error("이미지 파일만 가능해")); return; }
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      const img=new Image();
+      img.onload=()=>{
+        const scale=Math.min(1,maxWidth/img.width);
+        const canvas=document.createElement("canvas");
+        canvas.width=Math.max(1,Math.round(img.width*scale));
+        canvas.height=Math.max(1,Math.round(img.height*scale));
+        canvas.getContext("2d").drawImage(img,0,0,canvas.width,canvas.height);
+        resolve(canvas.toDataURL("image/jpeg",quality));
+      };
+      img.onerror=()=>reject(new Error("사진을 불러오지 못했어"));
+      img.src=ev.target.result;
+    };
+    reader.onerror=()=>reject(new Error("파일을 읽는 중 오류가 발생했어"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function AnalogRecordsView({data,setData}) {
+  const [date,setDate]=useState(studyDayStr());
+  const [cameraKind,setCameraKind]=useState(null);
+  const records=(data.analogRecords||[]).filter(r=>r.date===date).sort((a,b)=>(a.createdAt||0)-(b.createdAt||0));
+  const groups=[["poem","✍️ 공부 시작 시"],["diary","📓 하루 공부 일기"]];
+
+  function addRecord(kind,photo){
+    if(!photo) return;
+    const rec={id:`analog-${Date.now()}-${Math.random().toString(36).slice(2,8)}`,date,kind,photo,createdAt:Date.now()};
+    setData(d=>({...d,analogRecords:[...(d.analogRecords||[]),rec]}));
+  }
+  async function pickFiles(kind,e){
+    const files=[...(e.target.files||[])];
+    e.target.value="";
+    for(const file of files){
+      try{ addRecord(kind,await compressImageFile(file)); }
+      catch(err){ alert(err?.message||"사진 처리 중 오류가 발생했어."); }
+    }
+  }
+  function removeRecord(id){
+    if(!confirm("이 기록 사진을 삭제할까?")) return;
+    setData(d=>({...d,analogRecords:(d.analogRecords||[]).filter(r=>r.id!==id)}));
+  }
+
+  return <div>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:"1rem",flexWrap:"wrap"}}>
+      <div>
+        <div style={{color:"#f1f3f9",fontWeight:900,fontSize:"1rem"}}>아날로그 기록</div>
+        <div style={{color:"#4b5563",fontSize:"0.72rem",marginTop:3}}>종이에 쓴 시와 공부 일기를 사진 그대로 보관해.</div>
+      </div>
+      <input type="date" value={date} onChange={e=>setDate(e.target.value)} style={{...inp,width:"auto"}}/>
+    </div>
+    {groups.map(([kind,title])=>{
+      const list=records.filter(r=>r.kind===kind);
+      return <div key={kind} style={{background:"#0a0c12",border:"1px solid #1e2230",borderRadius:12,padding:"1rem",marginBottom:"0.9rem"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:"0.75rem"}}>
+          <div style={{color:"#d1d5db",fontWeight:800,fontSize:"0.86rem"}}>{title} <span style={{color:"#4b5563",fontWeight:500}}>({list.length})</span></div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+            <label style={{display:"inline-flex",alignItems:"center",background:"#111318",border:"1px solid #1e2230",borderRadius:8,padding:"0.5rem 0.8rem",cursor:"pointer",color:"#9ca3af",fontSize:"0.76rem",fontWeight:700}}>
+              🖼️ 앨범에서 선택
+              <input type="file" accept="image/*" multiple onChange={e=>pickFiles(kind,e)} style={{display:"none"}}/>
+            </label>
+            <button onClick={()=>setCameraKind(kind)} style={{background:"#6366f118",border:"1px solid #6366f140",borderRadius:8,padding:"0.5rem 0.8rem",cursor:"pointer",color:"#818cf8",fontSize:"0.76rem",fontWeight:800}}>🔇 무음 카메라</button>
+          </div>
+        </div>
+        {list.length===0?<div style={{color:"#343947",fontSize:"0.76rem",padding:"0.8rem 0"}}>아직 사진이 없어.</div>:
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(130px,1fr))",gap:8}}>
+            {list.map(r=><div key={r.id} style={{position:"relative",border:"1px solid #1e2230",borderRadius:9,overflow:"hidden",background:"#080910"}}>
+              <img src={r.photo} alt={kind==="poem"?"공부 시작 시":"공부 일기"} style={{width:"100%",height:170,objectFit:"contain",display:"block"}}/>
+              <button onClick={()=>removeRecord(r.id)} style={{position:"absolute",right:5,top:5,width:26,height:26,borderRadius:99,border:"1px solid #ef444450",background:"#080910dd",color:"#ef4444",cursor:"pointer",fontWeight:900}}>×</button>
+            </div>)}
+          </div>}
+      </div>;
+    })}
+    {cameraKind&&<InAppCamera onCapture={dataUrl=>addRecord(cameraKind,dataUrl)} onClose={()=>setCameraKind(null)}/>} 
+  </div>;
 }
 
 function WrongForm({onSave,onClose,editData,onDelete}) {
@@ -2125,10 +2212,44 @@ function buildReportText(data, period) {
     if(note && note.trim()) lines.push(`- [${d}] ${note}`);
   });
 
+  const analogRecords=(data.analogRecords||[]).filter(r=>new Date(r.date)>=cutoff && new Date(r.date)<=now);
+  lines.push("");
+  lines.push(`[아날로그 기록 사진] 총 ${analogRecords.length}장`);
+  if(analogRecords.length===0) lines.push("- 없음");
+  else {
+    const byDate={};
+    analogRecords.forEach(r=>{ if(!byDate[r.date]) byDate[r.date]={poem:0,diary:0}; byDate[r.date][r.kind]=(byDate[r.date][r.kind]||0)+1; });
+    Object.entries(byDate).sort((a,b)=>a[0].localeCompare(b[0])).forEach(([d,c])=>lines.push(`- [${d}] 공부 시작 시 ${c.poem||0}장 · 공부 일기 ${c.diary||0}장`));
+    lines.push("※ 실제 사진은 ‘사진 포함 HTML 리포트’로 내보내면 함께 포함돼.");
+  }
+
   lines.push("");
   lines.push(`=== 리포트 끝 ===`);
 
   return lines.join("\n");
+}
+
+function reportCutoff(period){
+  const now=new Date(), cutoff=new Date();
+  if(period==="day") cutoff.setDate(now.getDate()-1);
+  else if(period==="week") cutoff.setDate(now.getDate()-7);
+  else if(period==="month") cutoff.setMonth(now.getMonth()-1);
+  else cutoff.setMonth(now.getMonth()-3);
+  return {now,cutoff};
+}
+function escapeHtml(v=""){
+  return String(v).replace(/[&<>"']/g,ch=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[ch]));
+}
+function exportReportHtml(data,period){
+  const text=buildReportText(data,period);
+  const {now,cutoff}=reportCutoff(period);
+  const photos=(data.analogRecords||[]).filter(r=>r.photo&&new Date(r.date)>=cutoff&&new Date(r.date)<=now).sort((a,b)=>a.date.localeCompare(b.date)||(a.createdAt||0)-(b.createdAt||0));
+  const photoHtml=photos.length?photos.map(r=>`<figure><img src="${r.photo}" alt="${r.kind==="poem"?"공부 시작 시":"공부 일기"}"><figcaption>${escapeHtml(r.date)} · ${r.kind==="poem"?"공부 시작 시":"공부 일기"}</figcaption></figure>`).join(""):"<p>해당 기간의 기록 사진이 없습니다.</p>";
+  const html=`<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>STUDY_OS 리포트</title><style>body{font-family:system-ui,-apple-system,sans-serif;max-width:900px;margin:0 auto;padding:28px;color:#111;line-height:1.55}pre{white-space:pre-wrap;background:#f5f5f7;padding:18px;border-radius:12px;font-size:13px}h2{margin-top:34px}figure{margin:20px 0;page-break-inside:avoid}img{max-width:100%;max-height:900px;display:block;margin:auto;border:1px solid #ddd;border-radius:8px}figcaption{text-align:center;color:#666;margin-top:6px;font-size:13px}@media print{body{max-width:none;padding:0}pre{background:white;border:1px solid #ddd}}</style></head><body><h1>STUDY_OS 리포트</h1><pre>${escapeHtml(text)}</pre><h2>아날로그 기록 사진</h2>${photoHtml}</body></html>`;
+  const blob=new Blob([html],{type:"text/html;charset=utf-8"});
+  const url=URL.createObjectURL(blob); const a=document.createElement("a");
+  a.href=url; a.download=`STUDY_OS_report_${todayStr()}.html`; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
 
 function ReportExport({data, onClose}) {
@@ -2158,7 +2279,7 @@ function ReportExport({data, onClose}) {
       <p style={{color:"#6b7280",fontSize:"0.78rem",marginBottom:"0.8rem",lineHeight:1.6}}>
         아래 텍스트를 복사해서 Claude 채팅에 붙여넣으면, 학습 그래프 분석과 자주 틀린 오류 유형을 짚어줄 수 있어.
       </p>
-      <Btn full onClick={copyText}>📋 텍스트 복사하기</Btn>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}><Btn full onClick={copyText}>📋 텍스트 복사하기</Btn><Btn full outline onClick={()=>exportReportHtml(data,period)}>🖼 사진 포함 HTML</Btn></div>
       <textarea readOnly value={text} rows={16}
         style={{...inp,marginTop:"1rem",resize:"vertical",fontSize:"0.72rem",color:"#9ca3af",fontFamily:"'JetBrains Mono',monospace",lineHeight:1.6}}
         onFocus={e=>e.target.select()}/>
@@ -3368,6 +3489,7 @@ export default function App() {
     {id:"goals",label:"목표"},
     {id:"calendar",label:"달력"},
     {id:"wrongs",label:`오답 (${data.wrongs.length})`},
+    {id:"records",label:"시·일기"},
   ];
 
   return (
@@ -3476,6 +3598,7 @@ export default function App() {
             activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={stopTimer}/>}
           {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
           {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
+          {tab==="records"&&<AnalogRecordsView data={data} setData={setData}/>}
           {tab==="wrongs"&&<WrongFolder wrongs={data.wrongs} onDelete={delWrong} onEdit={w=>{setEditWrong(w);setModal("wrong");}} folderNames={data.folderNames||{}} onRenameFolder={renameFolder}
             onPractice={e=>setPracticeQueue([e])}
             onPracticeGroup={list=>setPracticeQueue(list)}
