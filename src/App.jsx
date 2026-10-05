@@ -1903,46 +1903,71 @@ function DrawingCanvas({bgImage, height=380}) {
 }
 
 function PracticeMode({queue, onExit, onResult}) {
+  // 한 문제를 그 자리에서 즉시 반복하지 않는다.
+  // 1회독을 끝낸 뒤 아직 2연속 정답을 채우지 못한 문제만 다음 회독으로 넘긴다.
+  const [roundQueue,setRoundQueue]=useState(()=>queue||[]);
   const [idx,setIdx]=useState(0);
+  const [round,setRound]=useState(1);
+  const [nextRound,setNextRound]=useState([]);
   const [showAnswer,setShowAnswer]=useState(false);
   const [results,setResults]=useState({correct:0, wrong:0});
   const [canvasKey,setCanvasKey]=useState(0);
-  const [successStreak,setSuccessStreak]=useState(()=>queue?.[0]?.correctStreak||0);
+  const [streaks,setStreaks]=useState(()=>{
+    const out={};
+    (queue||[]).forEach(w=>{ out[String(w.id)]=Number(w.correctStreak)||0; });
+    return out;
+  });
 
-  const current = queue[idx];
-  const isLast = idx>=queue.length-1;
+  const current = roundQueue[idx];
+  const isLast = idx>=roundQueue.length-1;
 
-  // 연습 화면을 나갔다 다시 들어와도 저장된 연속 성공 횟수에서 이어서 시작한다.
-  // 같은 문제를 다시 푸는 동안에는 queue 원본이 갱신되지 않으므로 idx가 바뀔 때만 동기화한다.
-  useEffect(()=>{
-    setSuccessStreak(queue?.[idx]?.correctStreak||0);
-  },[idx,queue]);
+  function finishSession(result){
+    setTimeout(()=>{
+      alert(`오답 풀기 완료!\n맞음 ${results.correct+(result==="correct"?1:0)}개 · 틀림 ${results.wrong+(result==="wrong"?1:0)}개`);
+      onExit();
+    },100);
+  }
 
   function mark(result){ // "correct" | "wrong"
-    const nextStreak = result==="correct" ? successStreak+1 : 0;
-    onResult(current, result, nextStreak>=2);
-    setResults(r=>({...r, [result]: r[result]+1}));
+    if(!current) return;
+    const key=String(current.id);
+    const prevStreak=Number(streaks[key])||0;
+    const nextStreak=result==="correct" ? prevStreak+1 : 0;
+    const solved=nextStreak>=2;
 
-    // 오답은 같은 문제를 다시 풀고, 맞아도 1회째라면 같은 문제를 한 번 더 연속으로 맞혀야 함.
-    if(result!=="correct" || nextStreak<2){
-      setSuccessStreak(result==="correct" ? nextStreak : 0);
+    onResult(current,result,solved);
+    setResults(r=>({...r,[result]:r[result]+1}));
+    setStreaks(s=>({...s,[key]:nextStreak}));
+
+    // 아직 2연속 통과가 아니면 '다음 회독' 후보로만 보낸다.
+    // 현재 자리에서 같은 문제를 즉시 다시 보여주지 않는다.
+    const pending = solved ? nextRound : [...nextRound,current];
+
+    if(!isLast){
+      setNextRound(pending);
+      setIdx(i=>i+1);
       setShowAnswer(false);
       setCanvasKey(k=>k+1);
       return;
     }
 
-    // 2회 연속 성공 → 다음 문제로 이동
-    setSuccessStreak(0);
-    if(!isLast){
-      setIdx(i=>i+1);
+    // 단일 문제 연습은 같은 문제가 즉시 두 번 뜨지 않도록 여기서 종료한다.
+    // 저장된 correctStreak은 다음에 이 문제를 다시 연습할 때 이어진다.
+    if(roundQueue.length===1 && (queue||[]).length===1){
+      finishSession(result);
+      return;
+    }
+
+    // 한 회독 완료: 미통과 문제만 다음 회독으로 이동.
+    if(pending.length>0){
+      setRoundQueue(pending);
+      setNextRound([]);
+      setIdx(0);
+      setRound(r=>r+1);
       setShowAnswer(false);
       setCanvasKey(k=>k+1);
     } else {
-      // finished
-      setTimeout(()=>{
-        alert(`연속 풀기 완료!\n맞음 ${results.correct+(result==="correct"?1:0)}개 · 틀림 ${results.wrong+(result==="wrong"?1:0)}개`);
-        onExit();
-      },100);
+      finishSession(result);
     }
   }
 
@@ -1961,9 +1986,10 @@ function PracticeMode({queue, onExit, onResult}) {
           {current.failCount>0&&<span style={{color:"#ef4444",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>❌×{current.failCount} 누적</span>}
         </div>
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <span style={{color:"#818cf8",fontSize:"0.72rem",fontWeight:800}}>{round}회독</span>
           <span style={{color:"#22c55e",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>✅{results.correct}</span>
           <span style={{color:"#ef4444",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>❌{results.wrong}</span>
-          <span style={{color:"#4b5563",fontSize:"0.75rem"}}>{idx+1}/{queue.length}</span>
+          <span style={{color:"#4b5563",fontSize:"0.75rem"}}>{idx+1}/{roundQueue.length}</span>
         </div>
       </div>
 
@@ -2012,8 +2038,6 @@ function PracticeMode({queue, onExit, onResult}) {
             }}>✅ 맞았어</button>
           </div>
         )}
-
-        {isLast && showAnswer && <div style={{textAlign:"center",color:"#4b5563",fontSize:"0.75rem",marginTop:10}}>마지막 문제야</div>}
       </div>
     </div>
   );
