@@ -2065,7 +2065,6 @@ function buildReportText(data, period) {
     lines.push(`목표 별점: 평가 ${ratedPlans.length}개 · 평균 ${(ratedPlans.reduce((n,p)=>n+Number(p.planRating),0)/ratedPlans.length).toFixed(2)}/5`);
     ratedPlans.forEach(p=>lines.push(`  - [${p.date}|${p.subject}] ${p.planRating}/5 · ${p.content.slice(0,35)}`));
   }
-  }
 
   // 실패는 같은 날 여러 계획이 같은 원인으로 무너지는 경우가 많으므로 "발생 일수" 중심으로 분석
   const failedPlans = plans.filter(p=>p.status==="failed");
