@@ -40,23 +40,28 @@ const SUBJECT_COLORS = {
   기타:   { bg:"#64748b", light:"#64748b30", text:"#cbd5e1" }, // 슬레이트
 };
 const ERROR_CODES = {
-  "XC-N":{ desc:"신규 개념", detail:"문제 풀며 처음 얻은 새 개념", color:"#f97316" },
-  "XC":  { desc:"개념 누락", detail:"배웠는데 까먹었거나 모르는 개념", color:"#ef4444" },
-  "XM-F":{ desc:"정독 누락", detail:"1번 정독 안 해서 조건·답 놓침", color:"#a78bfa" },
-  "XM-T/F":{ desc:"참/거짓 체크", detail:"옳은것/옳지않은것 헷갈림", color:"#06b6d4" },
-  "XM-V":{ desc:"검토 누락", detail:"풀이·답 재검토 안 함", color:"#3b82f6" },
-  "XJ":  { desc:"적용 오류", detail:"개념은 아는데 적용을 못함", color:"#10b981" },
+  "XC-N": { desc:"신개념", detail:"처음 접한 새로운 개념을 몰라서 틀림", color:"#f97316" },
+  "XC":   { desc:"기본 개념 공부 부족", detail:"배운 기본 개념이지만 공부가 부족해서 틀림", color:"#ef4444" },
+  "XC-J": { desc:"새로운 풀이·활용", detail:"아는 개념이지만 새로운 풀이 또는 활용에서 틀림", color:"#10b981" },
+  "XM-F/T": { desc:"발문 체크 누락", detail:"문제의 발문을 확인하지 않음", color:"#06b6d4" },
+  "XM-R": { desc:"문제 1회독 누락", detail:"문제를 한 번 끝까지 읽지 않고 풂", color:"#a78bfa" },
+  "XM-C": { desc:"마지막 확인·검토 누락", detail:"마지막에 체크한 답이나 풀이를 확인·검토하지 않음", color:"#3b82f6" },
 };
-// 대분류: XC(개념) / XM(정독·검토) / XJ(적용) — 오답 폴더 상위 그룹핑에 사용
+// 이전 기록의 코드는 임의로 변환하지 않는다. 과거 코드를 읽고 표시할 수 있도록 유지한다.
+const LEGACY_ERROR_CODES = {
+  "XM-F": { desc:"기존 정독 누락", detail:"이전 체계에서 기록됨", color:"#a78bfa" },
+  "XM-T/F": { desc:"기존 참/거짓 체크", detail:"이전 체계에서 기록됨", color:"#06b6d4" },
+  "XM-V": { desc:"기존 검토 누락", detail:"이전 체계에서 기록됨", color:"#3b82f6" },
+  "XJ": { desc:"기존 적용 오류", detail:"이전 체계에서 기록됨", color:"#10b981" },
+};
+const ALL_ERROR_CODES = {...LEGACY_ERROR_CODES, ...ERROR_CODES};
 const ERROR_MAJOR = {
-  "XC-N":"XC", "XC":"XC",
-  "XM-F":"XM", "XM-T/F":"XM", "XM-V":"XM",
-  "XJ":"XJ",
+  "XC-N":"XC", "XC":"XC", "XC-J":"XC",
+  "XM-F/T":"XM", "XM-R":"XM", "XM-C":"XM",
 };
 const ERROR_MAJOR_LABEL = {
-  XC: { label:"XC — 개념", desc:"신규 개념 습득 / 개념 누락", color:"#ef4444" },
-  XM: { label:"XM — 정독·검토", desc:"정독 누락 / 참거짓 체크 / 검토 누락", color:"#3b82f6" },
-  XJ: { label:"XJ — 적용", desc:"개념은 알지만 적용을 못함", color:"#10b981" },
+  XC: { label:"XC — 개념·활용", desc:"신개념 / 기본 개념 공부 부족 / 새로운 풀이·활용", color:"#ef4444" },
+  XM: { label:"XM — 독해·검토", desc:"발문 체크 / 1회독 / 최종 검토", color:"#3b82f6" },
 };
 const STORAGE_KEY = "studyos_v6";
 const LEGACY_STORAGE_KEY = "studyos_v5";
@@ -869,7 +874,7 @@ function Btn({children,onClick,color="#6366f1",full,small,outline,disabled}) {
 }
 
 function Tag({code}) {
-  const c=ERROR_CODES[code]; if(!c) return null;
+  const c=ALL_ERROR_CODES[code]||{color:"#9ca3af"};
   return <span style={{background:`${c.color}20`,color:c.color,border:`1px solid ${c.color}40`,
     borderRadius:99,padding:"0.13rem 0.5rem",fontSize:"0.7rem",
     fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{code}</span>;
@@ -1470,7 +1475,8 @@ function WrongForm({onSave,onClose,editData,onDelete}) {
       <div style={{marginBottom:"0.9rem"}}>
         <Lbl>오답 코드</Lbl>
         <div style={{display:"flex",flexDirection:"column",gap:8}}>
-          {["XC","XM","XJ"].map(major=>{
+          {editData?.code && !ERROR_CODES[editData.code] && <button type="button" onClick={()=>setCode(editData.code)} style={{color:"#cbd5e1",background:"#334155",border:"1px solid #64748b",borderRadius:8,padding:8}}>기존 코드 유지: {editData.code}</button>}
+          {["XC","XM"].map(major=>{
             const ml=ERROR_MAJOR_LABEL[major];
             const codesInGroup=Object.entries(ERROR_CODES).filter(([k])=>ERROR_MAJOR[k]===major);
             return (
@@ -1491,8 +1497,8 @@ function WrongForm({onSave,onClose,editData,onDelete}) {
             );
           })}
         </div>
-        <div style={{color:ERROR_CODES[code]?.color||"#9ca3af",fontSize:"0.72rem",marginTop:6}}>
-          <strong>{ERROR_CODES[code]?.desc||code}</strong>{ERROR_CODES[code]?.detail?` — ${ERROR_CODES[code].detail}`:""}
+        <div style={{color:ALL_ERROR_CODES[code]?.color||"#9ca3af",fontSize:"0.72rem",marginTop:6}}>
+          <strong>{ALL_ERROR_CODES[code]?.desc||code}</strong>{ALL_ERROR_CODES[code]?.detail?` — ${ALL_ERROR_CODES[code].detail}`:""}
         </div>
       </div>
 
@@ -1602,7 +1608,7 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
       {/* 코드 분포 */}
       <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"1rem"}}>
         {Object.entries(byCode2).sort((a,b)=>b[1]-a[1]).map(([k,v])=>{
-          const c=ERROR_CODES[k];
+          const c=ALL_ERROR_CODES[k]||{color:"#9ca3af"};
           return <div key={k} style={{background:`${c.color}15`,border:`1px solid ${c.color}30`,borderRadius:7,padding:"0.28rem 0.6rem",display:"flex",alignItems:"center",gap:5}}>
             <Tag code={k}/><span style={{color:"#e8eaf0",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>{v}</span>
           </div>;
@@ -1652,7 +1658,7 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
                       {Object.entries(byCode).sort((a,b)=>b[1].length-a[1].length).map(([code,codeEntries])=>{
                         const codeKey=sub+"/"+code;
                         const codeOpen=openCodes[codeKey];
-                        const cc=ERROR_CODES[code]||{color:"#9ca3af",desc:code};
+                        const cc=ALL_ERROR_CODES[code]||{color:"#9ca3af",desc:code};
                         return (
                           <div key={code} style={{marginTop:6,background:"#0d0f18",border:`1px solid ${cc.color}20`,borderRadius:10,overflow:"hidden"}}>
                             <div onClick={()=>setOpenCodes(s=>({...s,[codeKey]:!s[codeKey]}))} style={{padding:"0.6rem 0.85rem",cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
@@ -1705,7 +1711,7 @@ function WrongFolder({wrongs,onDelete,onEdit,folderNames,onRenameFolder,onPracti
               <option>전체</option>{SUBJECTS.map(s=><option key={s}>{s}</option>)}
             </select>
             <select value={fCode} onChange={e=>setFCode(e.target.value)} style={{...inp,width:"auto"}}>
-              <option>전체</option>{Object.keys(ERROR_CODES).map(k=><option key={k}>{k}</option>)}
+              <option>전체</option>{[...new Set([...Object.keys(ERROR_CODES),...wrongs.map(w=>w.code).filter(Boolean)])].map(k=><option key={k}>{k}</option>)}
             </select>
             <span style={{color:"#4b5563",fontSize:"0.78rem",alignSelf:"center"}}>{filtered.length}개</span>
           </div>
@@ -1903,74 +1909,17 @@ function DrawingCanvas({bgImage, height=380}) {
 }
 
 function PracticeMode({queue, onExit, onResult}) {
-  // 한 문제를 그 자리에서 즉시 반복하지 않는다.
-  // 1회독을 끝낸 뒤 아직 2연속 정답을 채우지 못한 문제만 다음 회독으로 넘긴다.
-  const [roundQueue,setRoundQueue]=useState(()=>queue||[]);
   const [idx,setIdx]=useState(0);
-  const [round,setRound]=useState(1);
-  const [nextRound,setNextRound]=useState([]);
   const [showAnswer,setShowAnswer]=useState(false);
-  const [results,setResults]=useState({correct:0, wrong:0});
   const [canvasKey,setCanvasKey]=useState(0);
-  const [streaks,setStreaks]=useState(()=>{
-    const out={};
-    (queue||[]).forEach(w=>{ out[String(w.id)]=Number(w.correctStreak)||0; });
-    return out;
-  });
-
-  const current = roundQueue[idx];
-  const isLast = idx>=roundQueue.length-1;
-
-  function finishSession(result){
-    setTimeout(()=>{
-      alert(`오답 풀기 완료!\n맞음 ${results.correct+(result==="correct"?1:0)}개 · 틀림 ${results.wrong+(result==="wrong"?1:0)}개`);
-      onExit();
-    },100);
-  }
-
-  function mark(result){ // "correct" | "wrong"
+  const current=queue[idx];
+  const isLast=idx>=queue.length-1;
+  function mark(score){
     if(!current) return;
-    const key=String(current.id);
-    const prevStreak=Number(streaks[key])||0;
-    const nextStreak=result==="correct" ? prevStreak+1 : 0;
-    const solved=nextStreak>=2;
-
-    onResult(current,result,solved);
-    setResults(r=>({...r,[result]:r[result]+1}));
-    setStreaks(s=>({...s,[key]:nextStreak}));
-
-    // 아직 2연속 통과가 아니면 '다음 회독' 후보로만 보낸다.
-    // 현재 자리에서 같은 문제를 즉시 다시 보여주지 않는다.
-    const pending = solved ? nextRound : [...nextRound,current];
-
-    if(!isLast){
-      setNextRound(pending);
-      setIdx(i=>i+1);
-      setShowAnswer(false);
-      setCanvasKey(k=>k+1);
-      return;
-    }
-
-    // 단일 문제 연습은 같은 문제가 즉시 두 번 뜨지 않도록 여기서 종료한다.
-    // 저장된 correctStreak은 다음에 이 문제를 다시 연습할 때 이어진다.
-    if(roundQueue.length===1 && (queue||[]).length===1){
-      finishSession(result);
-      return;
-    }
-
-    // 한 회독 완료: 미통과 문제만 다음 회독으로 이동.
-    if(pending.length>0){
-      setRoundQueue(pending);
-      setNextRound([]);
-      setIdx(0);
-      setRound(r=>r+1);
-      setShowAnswer(false);
-      setCanvasKey(k=>k+1);
-    } else {
-      finishSession(result);
-    }
+    onResult(current,score);
+    if(isLast) onExit();
+    else {setIdx(i=>i+1);setShowAnswer(false);setCanvasKey(k=>k+1);}
   }
-
   if(!current) return null;
   const c=SUBJECT_COLORS[current.subject];
 
@@ -1983,14 +1932,8 @@ function PracticeMode({queue, onExit, onResult}) {
           <button onClick={onExit} style={{background:"none",border:"none",color:"#6b7280",cursor:"pointer",fontSize:"1.1rem"}}>←</button>
           <span style={{color:c?.text||"#a5b4fc",fontWeight:800,fontSize:"0.9rem"}}>{current.subject}</span>
           <Tag code={current.code}/>
-          {current.failCount>0&&<span style={{color:"#ef4444",fontSize:"0.72rem",fontFamily:"'JetBrains Mono',monospace",fontWeight:700}}>❌×{current.failCount} 누적</span>}
         </div>
-        <div style={{display:"flex",gap:10,alignItems:"center"}}>
-          <span style={{color:"#818cf8",fontSize:"0.72rem",fontWeight:800}}>{round}회독</span>
-          <span style={{color:"#22c55e",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>✅{results.correct}</span>
-          <span style={{color:"#ef4444",fontSize:"0.78rem",fontFamily:"'JetBrains Mono',monospace"}}>❌{results.wrong}</span>
-          <span style={{color:"#4b5563",fontSize:"0.75rem"}}>{idx+1}/{roundQueue.length}</span>
-        </div>
+        <span style={{color:"#818cf8",fontSize:"0.75rem"}}>{idx+1} / {queue.length}</span>
       </div>
 
       <div style={{maxWidth:720,margin:"0 auto",padding:"1.2rem"}}>
@@ -2023,19 +1966,15 @@ function PracticeMode({queue, onExit, onResult}) {
           </div>
         )}
 
-        {/* 채점 버튼 */}
+        {/* 5점 평가 */}
         {showAnswer && (
-          <div style={{display:"flex",gap:8,marginTop:"1rem"}}>
-            <button onClick={()=>mark("wrong")} style={{
-              flex:1,padding:"0.9rem",borderRadius:12,border:"1px solid #ef444450",
-              background:"#ef444418",color:"#ef4444",
-              fontSize:"0.95rem",fontWeight:800,cursor:"pointer"
-            }}>❌ 틀렸어</button>
-            <button onClick={()=>mark("correct")} style={{
-              flex:1,padding:"0.9rem",borderRadius:12,border:"1px solid #22c55e50",
-              background:"#22c55e18",color:"#22c55e",
-              fontSize:"0.95rem",fontWeight:800,cursor:"pointer"
-            }}>✅ 맞았어</button>
+          <div style={{marginTop:"1rem"}}>
+            <div style={{color:"#9ca3af",fontSize:"0.8rem",marginBottom:10}}>이번 풀이를 5점 만점으로 평가</div>
+            <div style={{display:"flex",gap:7}}>
+              {[1,2,3,4,5].map(score=>(
+                <button key={score} onClick={()=>mark(score)} style={{flex:1,padding:"0.85rem 0",borderRadius:10,border:"1px solid #6366f160",background:"#6366f120",color:"#c7d2fe",fontWeight:800,fontSize:"1rem",cursor:"pointer"}}>{score}점</button>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -2108,7 +2047,7 @@ function buildReportText(data, period) {
   lines.push(`오답 코드별:`);
   if(Object.keys(byCode).length===0) lines.push("- 없음");
   else Object.entries(byCode).sort((a,b)=>b[1]-a[1]).forEach(([k,v])=>{
-    const desc=ERROR_CODES[k]?.desc||"";
+    const desc=ALL_ERROR_CODES[k]?.desc||"";
     lines.push(`- ${k} (${desc}): ${v}개 (${((v/wrongs.length)*100).toFixed(0)}%)`);
   });
   lines.push("");
@@ -3480,22 +3419,10 @@ export default function App() {
   const delWrong=id=>setData(d=>({...d,wrongs:d.wrongs.filter(e=>e.id!==id)}));
   const renameFolder=(key,name)=>setData(d=>({...d,folderNames:{...(d.folderNames||{}),[key]:name}}));
 
-  function handlePracticeResult(entry, result, solved) {
-    setData(d=>({
-      ...d,
-      wrongs: d.wrongs.map(w=>{
-        if(w.id!==entry.id) return w;
-        const streak = result==="correct" ? (w.correctStreak||0)+1 : 0;
-        return {
-          ...w,
-          attemptCount: (w.attemptCount||0)+1,
-          failCount: result==="wrong" ? (w.failCount||0)+1 : (w.failCount||0),
-          correctStreak: streak,
-          solved: solved ? true : w.solved,
-          lastPracticed: todayStr(),
-        };
-      })
-    }));
+  function handlePracticeResult(entry, score) {
+    setData(d=>({...d,wrongs:d.wrongs.map(w=>w.id===entry.id?{
+      ...w,lastScore:score,lastPracticed:todayStr(),solved:score===5
+    }:w)}));
   }
 
   // 이번 주 통계
