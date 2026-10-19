@@ -80,6 +80,7 @@ const initialData = {
   monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
   nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
+  performanceTasks: [], // 수행평가 일정
   analogRecords: [],     // 손글씨 시/공부 일기 사진: { id, date, kind:"poem"|"diary", photo, createdAt }
 };
 
@@ -129,7 +130,7 @@ const LEGACY_IDB_NAME = "studyos_v2";
 const IDB_STORE = "state";
 const IDB_KEY = "main";
 const CLIENT_ID_KEY = "studyos_client_id_v2";
-const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords"];
+const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords", "performanceTasks"];
 const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes"];
 const TIMETABLE_FIELD = "timetable";
 
@@ -187,6 +188,7 @@ function normalizeDataShape(d) {
     monthGoals: src.monthGoals || {},
     goalItems: Array.isArray(src.goalItems) ? src.goalItems : [],
     analogRecords: Array.isArray(src.analogRecords) ? src.analogRecords : [],
+    performanceTasks: Array.isArray(src.performanceTasks) ? src.performanceTasks : [],
     nightNotes: src.nightNotes || {},
     plans2: Array.isArray(src.plans2) ? src.plans2 : [],
   };
@@ -3109,6 +3111,74 @@ function AdhocStudyTimerModal({onStart,onClose,activeTimer}) {
 }
 
 // ── 메인 ──────────────────────────────────────────────────────────────────────
+
+function PerformanceBoard({tasks,onChange}) {
+  const [open,setOpen]=useState(false);
+  const [subject,setSubject]=useState("");
+  const [title,setTitle]=useState("");
+  const [due,setDue]=useState(todayStr());
+  const [details,setDetails]=useState("");
+  const [file,setFile]=useState(null);
+  const [busy,setBusy]=useState(false);
+  const [error,setError]=useState("");
+  const field={display:"block",width:"100%",boxSizing:"border-box",padding:9,marginBottom:8,background:"#141824",color:"#f3f4f6",border:"1px solid #303747",borderRadius:8};
+  async function add(){
+    if(!title.trim()||!due){setError("평가명과 날짜를 입력해줘.");return;}
+    setBusy(true);setError("");
+    try{
+      let attachment=null;
+      if(file){
+        if(!["image/jpeg","image/png","image/webp"].includes(file.type))throw Error("현재 Storage 설정은 JPG·PNG·WEBP만 지원해. PDF는 일정만 등록해줘.");
+        if(file.size>15*1024*1024)throw Error("사진은 15MB 이하여야 해.");
+        if(typeof navigator!=="undefined"&&navigator.onLine===false)throw Error("사진 업로드는 인터넷 연결이 필요해. 오프라인에서는 첨부 없이 일정만 저장할 수 있어.");
+        const path=`performance/${makeRandomId()}.${file.type.split("/")[1].replace("jpeg","jpg")}`;
+        const res=await fetch(`${SUPABASE_URL}/storage/v1/object/study-images/${path}`,{method:"POST",headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,"Content-Type":file.type},body:file});
+        if(!res.ok)throw Error(`사진 업로드 실패 (${res.status})`);
+        attachment={path,name:file.name};
+      }
+      onChange([...tasks,{id:makeRandomId(),subject:subject.trim(),title:title.trim(),due,details,attachment,done:false,createdAt:Date.now()}]);
+      setSubject("");setTitle("");setDue(todayStr());setDetails("");setFile(null);setOpen(false);
+    }catch(e){setError(e.message||"등록 실패");}finally{setBusy(false);}
+  }
+  async function openPhoto(t){
+    try{
+      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/authenticated/study-images/${t.attachment.path}`,{headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`}});
+      if(!res.ok)throw Error(`사진 조회 실패 (${res.status})`);
+      const blob=await res.blob();const url=URL.createObjectURL(blob);
+      const w=window.open(url,"_blank");if(!w)throw Error("팝업 차단을 해제해줘.");
+      setTimeout(()=>URL.revokeObjectURL(url),120000);
+    }catch(e){setError(e.message||"사진 조회 실패");}
+  }
+  const sorted=[...tasks].sort((a,b)=>Number(!!a.done)-Number(!!b.done)||(a.due||"").localeCompare(b.due||""));
+  return <section style={{border:"1px solid #343b51",borderRadius:12,background:"#0c101a",padding:15,marginBottom:18}}>
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:12}}>
+      <div><strong style={{color:"#f3f4f6"}}>📌 수행평가 일정</strong><div style={{color:"#9ca3af",fontSize:12,marginTop:3}}>미완료 {tasks.filter(t=>!t.done).length}건 · 날짜순</div></div>
+      <button onClick={()=>setOpen(v=>!v)} style={{background:"#6366f1",border:0,borderRadius:8,color:"white",padding:"8px 12px",cursor:"pointer"}}>{open?"닫기":"+ 등록"}</button>
+    </div>
+    {open&&<div style={{padding:10,background:"#111725",borderRadius:9,marginBottom:10}}>
+      <input style={field} placeholder="과목" value={subject} onChange={e=>setSubject(e.target.value)}/>
+      <input style={field} placeholder="수행평가명 (필수)" value={title} onChange={e=>setTitle(e.target.value)}/>
+      <input style={field} type="date" value={due} onChange={e=>setDue(e.target.value)}/>
+      <textarea style={{...field,minHeight:70}} placeholder="준비물 · 평가 내용 · 제출 방식" value={details} onChange={e=>setDetails(e.target.value)}/>
+      <label style={{color:"#a5b4fc",fontSize:12}}>공지 사진 (선택)<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setFile(e.target.files?.[0]||null)} style={{display:"block",margin:"7px 0 12px",maxWidth:"100%"}}/></label>
+      <button onClick={add} disabled={busy} style={{background:"#22c55e",border:0,borderRadius:8,padding:"8px 14px",fontWeight:700}}>{busy?"저장 중...":"일정 저장"}</button>
+    </div>}
+    {error&&<p style={{color:"#fca5a5",fontSize:12}}>{error}</p>}
+    {sorted.length===0?<div style={{color:"#6b7280",fontSize:13}}>등록된 수행평가가 없어.</div>:sorted.map(t=>{
+      const days=Math.round((new Date(`${t.due}T00:00:00`)-new Date(`${todayStr()}T00:00:00`))/86400000);
+      return <div key={t.id} style={{display:"flex",gap:9,borderTop:"1px solid #272c3b",padding:"10px 0",opacity:t.done?0.55:1}}>
+        <input type="checkbox" checked={!!t.done} onChange={e=>onChange(tasks.map(x=>x.id===t.id?{...x,done:e.target.checked}:x))}/>
+        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#f3f4f6",fontWeight:700,textDecoration:t.done?"line-through":"none"}}>{t.subject&&`${t.subject} · `}{t.title}</div>
+          <div style={{color:"#a5b4fc",fontSize:12,marginTop:4}}>{t.due} · {t.done?"완료":days===0?"D-DAY":days>0?`D-${days}`:`${-days}일 지남`}</div>
+          {t.details&&<div style={{color:"#9ca3af",fontSize:12,whiteSpace:"pre-wrap",marginTop:5}}>{t.details}</div>}
+          {t.attachment&&<button onClick={()=>openPhoto(t)} style={{border:0,background:"none",color:"#a5b4fc",padding:"6px 0",cursor:"pointer"}}>📎 공지 사진 보기</button>}
+        </div>
+        <button onClick={()=>{if(window.confirm("일정을 삭제할까?"))onChange(tasks.filter(x=>x.id!==t.id));}} style={{background:"none",border:0,color:"#9ca3af",cursor:"pointer",alignSelf:"start"}}>×</button>
+      </div>;
+    })}
+  </section>;
+}
+
 export default function App() {
   // 화면 state와 저장 state를 분리한다. UI에서 일어나는 모든 setData는 아래 래퍼를 통해
   // 항목별 버전/tombstone을 자동 기록한다. 서버/다른 탭에서 병합된 데이터만 setDataRaw를 쓴다.
@@ -3486,6 +3556,8 @@ export default function App() {
       );})()}
 
       <main style={{maxWidth:900,margin:"0 auto",padding:"1.4rem 1rem"}}>
+
+        <PerformanceBoard tasks={data.performanceTasks||[]} onChange={performanceTasks=>setData(d=>({...d,performanceTasks}))}/>
 
         {/* 리포트 내보내기 버튼 */}
         <div style={{display:"flex",gap:7,marginBottom:"1.2rem",flexWrap:"wrap"}}>
