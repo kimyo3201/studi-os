@@ -75,6 +75,8 @@ const TOTAL_HOURS = 24;
 const TOTAL_SLOTS = TOTAL_HOURS * SLOTS_PER_HOUR; // 144
 
 const initialData = {
+  adhocSessions: [],
+  slotOwners: {}, // date -> slot -> session identifier
   timetable: {},      // { "2024-01-01": { [slotIdx]: subjectName } }
   plans: {},          // { "2024-01-01": "오늘 계획 텍스트" }
   wrongs: [],
@@ -134,8 +136,8 @@ const LEGACY_IDB_NAME = "studyos_v2";
 const IDB_STORE = "state";
 const IDB_KEY = "main";
 const CLIENT_ID_KEY = "studyos_client_id_v2";
-const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords"];
-const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes", "schoolDays", "timeLabels"];
+const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords", "adhocSessions"];
+const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes", "schoolDays", "timeLabels", "slotOwners"];
 const TIMETABLE_FIELD = "timetable";
 
 function makeRandomId() {
@@ -1061,13 +1063,67 @@ function BatchPlanReviewModal({date, plans, onApply, onClose}) {
 function timeToMinutesOfDay(hhmm){ const [h,m]=hhmm.split(":").map(Number); return h*60+m; }
 function minutesOfDayToTime(mins){ const h=Math.floor(mins/60)%24, m=mins%60; return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`; }
 
+// Single source of truth for editable study intervals. Painted slots are a 10-minute projection.
+function syncLocalDate(ms){const d=new Date(ms);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
+function syncSlotAt(ms){const d=new Date(ms);let day=new Date(d.getFullYear(),d.getMonth(),d.getDate());if(d.getHours()<START_HOUR)day.setDate(day.getDate()-1);return {date:syncLocalDate(day.getTime()),slot:Math.floor((((d.getHours()*60+d.getMinutes())-START_HOUR*60+1440)%1440)/10)};}
+function syncInterval(s){const start=Number(s.startedAt),end=Number(s.endedAt??(start+Number(s.minutes||0)*60000));return Number.isFinite(start)&&Number.isFinite(end)&&end>start?{start,end}:null;}
+function syncParts(s,cutStart,cutEnd){const r=syncInterval(s);if(!r||r.end<=cutStart||r.start>=cutEnd)return [s];const out=[];for(const [a,b] of [[r.start,Math.min(r.end,cutStart)],[Math.max(r.start,cutEnd),r.end]])if(b>a)out.push({...s,id:makeRandomId(),startedAt:a,endedAt:b,minutes:(b-a)/60000,date:syncSlotAt(a).date});return out;}
+function syncNormalize(d){return {...d,plans2:(d.plans2||[]).map(p=>({...p,sessions:(p.sessions||[]).map(s=>({...s,id:s.id||makeRandomId()}))})),adhocSessions:(d.adhocSessions||[]).map(s=>({...s,id:s.id||makeRandomId()})),slotOwners:d.slotOwners||{}};}
+function syncRecalc(plans){return plans.map(p=>({...p,totalMinutes:(p.sessions||[]).reduce((n,s)=>{const r=syncInterval(s);return n+(r?(r.end-r.start)/60000:0)},0)}));}
+function syncCut(d,start,end){
+  const next={...d,plans2:syncRecalc((d.plans2||[]).map(p=>({...p,sessions:(p.sessions||[]).flatMap(s=>syncParts(s,start,end))}))),adhocSessions:(d.adhocSessions||[]).flatMap(s=>syncParts(s,start,end))};
+  const owners={...(d.slotOwners||{})},tt={...d.timetable};
+  const remaining=[...(next.plans2||[]).flatMap(p=>(p.sessions||[]).map(s=>({...s,subject:p.subject}))),...(next.adhocSessions||[])];
+  for(let t=Math.floor(start/600000)*600000;t<end;t+=600000){
+    const a=syncSlotAt(t),oldOwner=owners[a.date]?.[a.slot];
+    if(!oldOwner)continue; // Legacy/manual paint without ownership is never silently erased.
+    const replacement=remaining.find(s=>{const r=syncInterval(s);return r&&r.start<t+600000&&r.end>t;});
+    owners[a.date]={...(owners[a.date]||{})};tt[a.date]={...(tt[a.date]||{})};
+    if(replacement){owners[a.date][a.slot]=replacement.id;tt[a.date][a.slot]=replacement.subject;}
+    else {delete owners[a.date][a.slot];delete tt[a.date][a.slot];}
+  }
+  return {...next,slotOwners:owners,timetable:tt};
+}
+function syncSlotStart(date,slot){return new Date(`${date}T00:00:00`).getTime()+(START_HOUR*60+Number(slot)*10)*60000;}
+function syncPaint(d,date,slot,subject){
+  const start=syncSlotStart(date,slot),end=start+600000;
+  let next=syncCut(d,start,end);
+  const tt={...next.timetable,[date]:{...(next.timetable?.[date]||{})}};
+  if(subject)tt[date][slot]=subject;else delete tt[date][slot];
+  const owners={...(next.slotOwners||{}),[date]:{...(next.slotOwners?.[date]||{})}};
+  delete owners[date][slot];
+  // Manual painting is an editable study session, not a plan completion event.
+  if(subject){const id=makeRandomId();next.adhocSessions=[...(next.adhocSessions||[]),{id,subject,content:"타임테이블 직접 기록",date,startedAt:start,endedAt:end,minutes:10,manual:true}];owners[date][slot]=id;}
+  return {...next,timetable:tt,slotOwners:owners};
+}
+function syncAddSession(d,session,planId){
+  const r=syncInterval(session);if(!r)return d;
+  let next=syncCut(d,r.start,r.end);const id=session.id||makeRandomId();const record={...session,id,minutes:(r.end-r.start)/60000,date:syncSlotAt(r.start).date};
+  if(planId!=null){next.plans2=syncRecalc((next.plans2||[]).map(p=>p.id===planId?{...p,sessions:[...(p.sessions||[]),record]}:p));}
+  else next.adhocSessions=[...(next.adhocSessions||[]),record];
+  const tt={...next.timetable},owners={...(next.slotOwners||{})};
+  for(let t=Math.floor(r.start/600000)*600000;t<r.end;t+=600000){const a=syncSlotAt(t);tt[a.date]={...(tt[a.date]||{}),[a.slot]:session.subject};owners[a.date]={...(owners[a.date]||{}),[a.slot]:id};}
+  return {...next,timetable:tt,slotOwners:owners};
+}
+function syncEditPlan(d,planId,newSessions){
+  const plan=(d.plans2||[]).find(p=>p.id===planId);if(!plan)return d;
+  const oldIds=new Set((plan.sessions||[]).map(s=>s.id).filter(Boolean));
+  let next={...d,plans2:syncRecalc((d.plans2||[]).map(p=>p.id===planId?{...p,sessions:[]}:p))};
+  // Clear ONLY cells owned by the sessions being replaced.
+  const tt={...next.timetable},owners={...(next.slotOwners||{})};
+  for(const [day,slots] of Object.entries(owners)){let updated=false;for(const [slot,id] of Object.entries(slots||{}))if(oldIds.has(id)){if(!updated){owners[day]={...slots};tt[day]={...(tt[day]||{})};updated=true;}delete owners[day][slot];delete tt[day][slot];}}
+  next={...next,timetable:tt,slotOwners:owners};
+  for(const s of newSessions){next=syncAddSession(next,{...s,id:makeRandomId(),subject:plan.subject},planId);}
+  return next;
+}
 function SessionEditModal({plan, onSave, onClose}) {
   const [sessions,setSessions]=useState(()=>
     (plan.sessions||[]).map(s=>{
       const start=new Date(s.startedAt);
       const end=new Date(s.endedAt||s.startedAt+s.minutes*60000);
       return {
-        date: s.date || start.toISOString().slice(0,10),
+        date: syncLocalDate(start.getTime()),
+        id:s.id,
         startTime: `${String(start.getHours()).padStart(2,"0")}:${String(start.getMinutes()).padStart(2,"0")}`,
         endTime: `${String(end.getHours()).padStart(2,"0")}:${String(end.getMinutes()).padStart(2,"0")}`,
       };
@@ -1099,7 +1155,7 @@ function SessionEditModal({plan, onSave, onClose}) {
       const startedAt = new Date(`${s.date}T00:00:00`).getTime() + (sh*60+sm)*60000;
       const minutes = sessionMinutes(s);
       const endedAt = startedAt + minutes*60000;
-      return { date:s.date, startedAt, endedAt, minutes };
+      return { id:s.id||makeRandomId(), date:s.date, startedAt, endedAt, minutes };
     });
     onSave(rebuilt);
     onClose();
@@ -2737,15 +2793,17 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
   const batchEligiblePlans=dayPlans.filter(p=>p.status!=="done");
 
   function paint(si){
-    setData(d=>{const tt={...d.timetable};const day={...(tt[date]||{})};
-      if(erasing)delete day[si]; else day[si]=paintSubject;
-      tt[date]=day;return {...d,timetable:tt};});
+    if(activeTimer){alert("타이머 실행 중에는 기록 충돌을 막기 위해 색칠할 수 없어. 먼저 타이머를 정지해줘.");return;}
+    setData(d=>syncPaint(d,date,si,erasing?null:paintSubject));
   }
   function handleDown(si){setDragging(true);paint(si);}
   function handleEnter(si){if(dragging)paint(si);}
   function handleUp(){setDragging(false);}
-  function clearDay(){if(!confirm("이 날 타임테이블 초기화?"))return;
-    setData(d=>{const tt={...d.timetable};delete tt[date];return {...d,timetable:tt};});}
+  function clearDay(){
+    if(activeTimer){alert("타이머를 먼저 정지해줘.");return;}
+    if(!confirm("이 날 타임테이블과 해당 시간의 공부 기록을 모두 지울까?"))return;
+    setData(d=>{let n=d;for(let si=0;si<TOTAL_SLOTS;si++)n=syncPaint(n,date,si,null);return {...n,timetable:{...n.timetable,[date]:{}}};});
+  }
 
   function savePlan(p){
     setData(d=>{const list=[...(d.plans2||[])];
@@ -2844,52 +2902,9 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
 
   // 세션(공부 시간 구간) 수동 수정 — 계획의 totalMinutes 재계산 + 그 계획이
   // 칠했던 타임테이블 슬롯을 전부 지우고 새 세션 시각 기준으로 다시 칠함
-  function editSessions(planId, newSessions){
-    setData(d=>{
-      const plans=[...(d.plans2||[])];
-      const idx=plans.findIndex(p=>p.id===planId);
-      if(idx<0)return d;
-      const plan=plans[idx];
-      const oldSessions=plan.sessions||[];
-      const totalMinutes=newSessions.reduce((a,s)=>a+s.minutes,0);
-      plans[idx]={...plan, sessions:newSessions, totalMinutes};
-
-      // 옛 세션들이 칠했던 슬롯 지우기 (이 계획 과목으로 칠해진 것만, 다른 계획 것은 건드리지 않음)
-      const tt={...d.timetable};
-      function slotRangeOf(session){
-        const start=new Date(session.startedAt);
-        const studyDate=new Date(start);
-        if(start.getHours()<START_HOUR) studyDate.setDate(start.getDate()-1);
-        const dateStr=`${studyDate.getFullYear()}-${String(studyDate.getMonth()+1).padStart(2,"0")}-${String(studyDate.getDate()).padStart(2,"0")}`;
-        const startTotalMin=start.getHours()*60+start.getMinutes();
-        const offset=((startTotalMin-START_HOUR*60)+1440)%1440;
-        const startSlot=Math.floor(offset/10);
-        const slotCount=Math.max(1,Math.round(session.minutes/10));
-        return {dateStr,startSlot,slotCount};
-      }
-      oldSessions.forEach(s=>{
-        const {dateStr,startSlot,slotCount}=slotRangeOf(s);
-        if(!tt[dateStr])return;
-        const day={...tt[dateStr]};
-        for(let i=0;i<slotCount;i++){
-          const si=(startSlot+i)%TOTAL_SLOTS;
-          if(day[si]===plan.subject) delete day[si];
-        }
-        tt[dateStr]=day;
-      });
-      // 새 세션들로 다시 칠하기
-      newSessions.forEach(s=>{
-        const {dateStr,startSlot,slotCount}=slotRangeOf(s);
-        const day={...(tt[dateStr]||{})};
-        for(let i=0;i<slotCount;i++){
-          const si=(startSlot+i)%TOTAL_SLOTS;
-          day[si]=plan.subject;
-        }
-        tt[dateStr]=day;
-      });
-
-      return {...d, plans2:plans, timetable:tt};
-    });
+  function editSessions(planId,newSessions){
+    if(activeTimer?.planId===planId){alert("진행 중인 타이머를 먼저 정지해줘.");return;}
+    setData(d=>syncEditPlan(d,planId,newSessions));
   }
 
   return (
@@ -3373,37 +3388,10 @@ export default function App() {
     });
   }
   function stopTimer(){
-    if(!activeTimer) return;
-    const elapsedMs = Date.now()-activeTimer.startedAt;
-    const elapsedMin = Math.round(elapsedMs/60000);
-    if(elapsedMin>=1){
-      // 타이머 시작 시각부터 elapsedMin 분만큼 10분 슬롯을 자동으로 채움
-      const startDate = new Date(activeTimer.startedAt);
-      // 학습일 기준: 새벽 6시 이전 시작이면 전날 학습으로 귀속
-      const studyDate = new Date(startDate);
-      if (startDate.getHours() < START_HOUR) studyDate.setDate(startDate.getDate()-1);
-      const dateStr = `${studyDate.getFullYear()}-${String(studyDate.getMonth()+1).padStart(2,"0")}-${String(studyDate.getDate()).padStart(2,"0")}`;
-      const startTotalMin = startDate.getHours()*60+startDate.getMinutes();
-      const startOffsetFromWindow = ((startTotalMin - START_HOUR*60)+1440)%1440; // 06:00 기준 오프셋(분)
-      const startSlot = Math.floor(startOffsetFromWindow/10);
-      const slotCount = Math.max(1, Math.round(elapsedMin/10));
-      setData(d=>{
-        const tt={...d.timetable};
-        const day={...(tt[dateStr]||{})};
-        for(let i=0;i<slotCount;i++){
-          const si=(startSlot+i)%TOTAL_SLOTS;
-          day[si]=activeTimer.subject;
-        }
-        tt[dateStr]=day;
-        // 계획 타이머라면 해당 계획에 실행 시간을 누적한다.
-        // 계획 외 공부(adhoc)는 타임테이블에만 기록해서 기존 계획 데이터에는 손대지 않는다.
-        const plans=activeTimer.planId==null ? (d.plans2||[]) : (d.plans2||[]).map(p=>{
-          if(p.id!==activeTimer.planId) return p;
-          const sessions=[...(p.sessions||[]), { date:dateStr, minutes:elapsedMin, startedAt:activeTimer.startedAt, endedAt:Date.now() }];
-          return { ...p, totalMinutes:(p.totalMinutes||0)+elapsedMin, sessions };
-        });
-        return {...d, timetable:tt, plans2:plans};
-      });
+    if(!activeTimer)return;
+    const end=Date.now(),start=activeTimer.startedAt;
+    if(end>start){
+      setData(d=>syncAddSession(d,{subject:activeTimer.subject,content:activeTimer.content,startedAt:start,endedAt:end},activeTimer.planId));
     }
     setActiveTimer(null);
   }
