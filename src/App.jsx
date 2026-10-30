@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 
 // ── 상수 ──────────────────────────────────────────────────────────────────────
+const ACTIVITIES = ["노트 필기","문제 풀이","백지 인출","개념 회독"];
+const STUDY_WINDOW_START = 7*60;
+const STUDY_WINDOW_END = 26*60+30;
 const SUBJECTS = ["수학","영어","국어","과학","사회","한국사","물리","화학","생물","지구과학","기타"];
 
 // 계획 실패 사유 코드 — 하루의 실패 원인을 한 번만 태깅해 여러 계획에 적용할 수 있음
@@ -80,7 +83,8 @@ const initialData = {
   monthGoals: {},      // { "2024-01": "이번 달 목표 텍스트" } -- 구버전, 마이그레이션용
   goalItems: [],        // 상세 목표 항목들: { id, scope:"week"|"month", scopeKey, subject, content, difficulty, status, note }
   nightNotes: {},       // 밤 마무리 한줄: { "2024-01-01": "오늘 한줄 메모" }
-  performanceTasks: [], // 수행평가 일정
+  schoolDays: {}, // 날짜별 학교/6교시/7교시/휴일
+  timeLabels: {}, // 날짜별 타임테이블 슬롯: 휴식/이탈/개인일정
   analogRecords: [],     // 손글씨 시/공부 일기 사진: { id, date, kind:"poem"|"diary", photo, createdAt }
 };
 
@@ -130,8 +134,8 @@ const LEGACY_IDB_NAME = "studyos_v2";
 const IDB_STORE = "state";
 const IDB_KEY = "main";
 const CLIENT_ID_KEY = "studyos_client_id_v2";
-const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords", "performanceTasks"];
-const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes"];
+const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords"];
+const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes", "schoolDays", "timeLabels"];
 const TIMETABLE_FIELD = "timetable";
 
 function makeRandomId() {
@@ -188,8 +192,9 @@ function normalizeDataShape(d) {
     monthGoals: src.monthGoals || {},
     goalItems: Array.isArray(src.goalItems) ? src.goalItems : [],
     analogRecords: Array.isArray(src.analogRecords) ? src.analogRecords : [],
-    performanceTasks: Array.isArray(src.performanceTasks) ? src.performanceTasks : [],
     nightNotes: src.nightNotes || {},
+    schoolDays: src.schoolDays || {},
+    timeLabels: src.timeLabels || {},
     plans2: Array.isArray(src.plans2) ? src.plans2 : [],
   };
 }
@@ -912,6 +917,12 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
   const [date,setDate]=useState(editData?.date||defaultDate||todayStr());
   const [subject,setSubject]=useState(editData?.subject||"수학");
   const [content,setContent]=useState(editData?.content||"");
+  const [activity,setActivity]=useState(editData?.activity||"");
+  const [targetQty,setTargetQty]=useState(editData?.targetQty??"");
+  const [expectedMinutes,setExpectedMinutes]=useState(editData?.expectedMinutes??"");
+  const [actualQty,setActualQty]=useState(editData?.actualQty??"");
+  const [qualityCorrect,setQualityCorrect]=useState(editData?.qualityCorrect??"");
+  const [qualityTotal,setQualityTotal]=useState(editData?.qualityTotal??"");
 
   return (
     <Modal title={editData?"계획 수정":"계획 추가"} onClose={onClose}>
@@ -933,12 +944,26 @@ function PlanForm({onSave, onClose, editData, defaultDate}) {
         <textarea value={content} onChange={e=>setContent(e.target.value)} rows={3}
           style={{...inp,resize:"vertical"}} placeholder="예: 수학의 정석 미적분 p.120~150 풀기"/>
       </div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:9,marginBottom:12}}>
+        <div><Lbl>학습 활동 (선택)</Lbl><select style={inp} value={activity} onChange={e=>setActivity(e.target.value)}><option value="">일반 계획</option>{ACTIVITIES.map(a=><option key={a}>{a}</option>)}</select></div>
+        <div><Lbl>목표량 {activity==="문제 풀이"?"(문제)":"(쪽)"}</Lbl><input style={inp} type="number" min="0" value={targetQty} onChange={e=>setTargetQty(e.target.value)} placeholder="예: 20"/></div>
+        <div><Lbl>전체 예상 시간 (분)</Lbl><input style={inp} type="number" min="0" value={expectedMinutes} onChange={e=>setExpectedMinutes(e.target.value)} placeholder="예: 90"/></div>
+        <div><Lbl>실제 완료량 (수정 가능)</Lbl><input style={inp} type="number" min="0" value={actualQty} onChange={e=>setActualQty(e.target.value)} placeholder="완료 후 입력"/></div>
+        <div><Lbl>맞힌 수 / 인출 성공 수 (선택)</Lbl><input style={inp} type="number" min="0" value={qualityCorrect} onChange={e=>setQualityCorrect(e.target.value)}/></div>
+        <div><Lbl>확인한 총수 (선택)</Lbl><input style={inp} type="number" min="0" value={qualityTotal} onChange={e=>setQualityTotal(e.target.value)}/></div>
+      </div>
       <Btn full onClick={()=>{
         if(!content.trim())return;
         const id=editData?.id||Date.now();
         // 수정 시 기존 필드(진행상태, 누적시간, 세션기록, 실패사유 등)를 그대로 유지하고
         // 날짜/과목/내용만 덮어씀 — 수정할 때마다 시간이 초기화되던 버그 수정
-        onSave({...(editData||{}), id,date,subject,content,rootId:editData?.rootId||id,status:editData?.status||"todo"});
+        onSave({...(editData||{}), id,date,subject,content,activity,
+          targetQty:targetQty===""?null:Number(targetQty), expectedMinutes:expectedMinutes===""?null:Number(expectedMinutes),
+          actualQty:actualQty===""?null:Number(actualQty), qualityCorrect:qualityCorrect===""?null:Number(qualityCorrect),
+          qualityTotal:qualityTotal===""?null:Number(qualityTotal),
+          originalTargetQty:editData?.originalTargetQty??(targetQty===""?null:Number(targetQty)),
+          originalExpectedMinutes:editData?.originalExpectedMinutes??(expectedMinutes===""?null:Number(expectedMinutes)),
+          rootId:editData?.rootId||id,status:editData?.status||"todo"});
         onClose();
       }}>저장</Btn>
     </Modal>
@@ -1112,6 +1137,7 @@ function SessionEditModal({plan, onSave, onClose}) {
 
 function PlanRatingModal({plan,onConfirm,onClose}) {
   const [score,setScore]=useState(Number(plan.planRating)||0);
+  const [qty,setQty]=useState(plan.actualQty??plan.targetQty??"");
   return <Modal title="목표 달성 평가" onClose={onClose}>
     <div style={{color:"#9ca3af",marginBottom:14}}>이 목표의 실행을 5점 만점으로 평가해줘.</div>
     <div style={{display:"flex",justifyContent:"center",gap:9,marginBottom:18}}>
@@ -1119,7 +1145,8 @@ function PlanRatingModal({plan,onConfirm,onClose}) {
         aria-label={`${n}점`} style={{border:"none",background:"transparent",fontSize:"2rem",
         color:n<=score?"#f59e0b":"#374151",cursor:"pointer"}}>★</button>)}
     </div>
-    <Btn full disabled={!score} onClick={()=>onConfirm(score)}>{score?`${score}점으로 완료`:"별점을 선택해줘"}</Btn>
+    {plan.activity&&<div style={{marginBottom:12}}><Lbl>실제 완료량 ({plan.activity==="문제 풀이"?"문제":"쪽"})</Lbl><input style={inp} type="number" min="0" value={qty} onChange={e=>setQty(e.target.value)}/></div>}
+    <Btn full disabled={!score||(plan.activity&&(!qty||Number(qty)<Number(plan.targetQty||0)))} onClick={()=>onConfirm(score,qty===""?null:Number(qty))}>{score?"완료 저장":"별점을 선택해줘"}</Btn>
   </Modal>;
 }
 
@@ -1127,6 +1154,7 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
   const [deleteModalOpen,setDeleteModalOpen]=useState(false);
   const [sessionModalOpen,setSessionModalOpen]=useState(false);
   const [completeModalOpen,setCompleteModalOpen]=useState(false);
+  const [partialQty,setPartialQty]=useState(plan.actualQty??"");
   const c=SUBJECT_COLORS[plan.subject];
   const statusStyle={todo:{bg:"#1e2230",color:"#6b7280",label:"예정"},done:{bg:"#22c55e20",color:"#22c55e",label:"✅ 완료"},failed:{bg:"#ef444420",color:"#ef4444",label:"❌ 실패"}}[plan.status]||{bg:"#1e2230",color:"#6b7280",label:"예정"};
   const isRunning=activeTimer&&activeTimer.planId===plan.id;
@@ -1149,10 +1177,12 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
       <div style={{color:plan.status==="done"?"#4b5563":"#d1d5db",fontSize:"0.82rem",lineHeight:1.6,marginBottom:plan.note?6:8,textDecoration:plan.status==="done"?"line-through":"none"}}>{plan.content}</div>
       {Number(plan.planRating)>=1&&Number(plan.planRating)<=5&&<div style={{color:"#f59e0b",fontSize:"0.85rem",marginBottom:8}}>{"★".repeat(plan.planRating)}{"☆".repeat(5-plan.planRating)} <span style={{color:"#9ca3af"}}>{plan.planRating}/5</span></div>}
       {plan.note&&<div style={{color:"#4b5563",fontSize:"0.72rem",marginBottom:8}}>📌 {plan.note}</div>}
+      {plan.activity&&<div style={{color:"#a5b4fc",fontSize:"0.72rem",marginBottom:7}}>{plan.activity} · 목표 {plan.targetQty??"미입력"}{plan.activity==="문제 풀이"?"문제":"쪽"} · 전체 예상 {plan.expectedMinutes??"—"}분 · 실제 {plan.actualQty??"—"}</div>}
+      {plan.activity&&plan.status==="todo"&&<div style={{display:"flex",gap:5,marginBottom:8,alignItems:"center"}}><input type="number" min="0" max={plan.targetQty??undefined} placeholder="현재 완료량" value={partialQty} onChange={e=>setPartialQty(e.target.value)} style={{...inp,flex:1,minWidth:0,padding:"0.3rem"}}/><button onClick={()=>onStatus(plan.id,"todo",null,{actualQty:partialQty===""?null:Number(partialQty)})} style={{border:"1px solid #6366f160",borderRadius:7,background:"#6366f120",color:"#a5b4fc",padding:"0.35rem",cursor:"pointer"}}>부분 수행 저장</button></div>}
       {plan.status==="todo"&&onStartTimer&&<div style={{marginBottom:6}}>{isRunning?<button onClick={onStopTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444418",color:"#ef4444",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>■ 타이머 정지</button>:<button onClick={()=>onStartTimer(plan)} disabled={!!activeTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:`1px solid ${activeTimer?"#2a2d3a":(c?.bg||"#6366f1")+"50"}`,background:activeTimer?"transparent":(c?.bg||"#6366f1")+"18",color:activeTimer?"#4b5563":(c?.text||"#a5b4fc"),fontSize:"0.76rem",fontWeight:700,cursor:activeTimer?"not-allowed":"pointer"}}>{activeTimer?"다른 타이머 실행 중":"▶ 타이머 시작"}</button>}</div>}
       {plan.status==="todo"&&<div style={{display:"flex",gap:6}}><button onClick={()=>{if(isRunning){alert("계획을 완료하려면 타이머를 먼저 정지해줘.");return;}setCompleteModalOpen(true);}} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #22c55e40",background:"#22c55e15",color:"#22c55e",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>✅ 완료</button><button onClick={()=>onStatus(plan.id,"failed")} style={{flex:1,padding:"0.35rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444415",color:"#ef4444",fontSize:"0.75rem",fontWeight:700,cursor:"pointer"}}>❌ 실패 → 내일로</button></div>}
       {plan.status==="failed"&&<div style={{color:"#ef4444",fontSize:"0.7rem"}}>→ {nextDay(plan.date)}로 이동됨</div>}
-      {completeModalOpen&&<PlanRatingModal plan={plan} onConfirm={score=>{onStatus(plan.id,"done",null,{planRating:score});setCompleteModalOpen(false);}} onClose={()=>setCompleteModalOpen(false)}/>}
+      {completeModalOpen&&<PlanRatingModal plan={plan} onConfirm={(score,qty)=>{onStatus(plan.id,"done",null,{planRating:score,actualQty:qty});setCompleteModalOpen(false);}} onClose={()=>setCompleteModalOpen(false)}/>}
       {deleteModalOpen&&<ReasonPickerModal title="🗑 이 계획을 왜 삭제해?" reasons={DELETE_REASONS} help="삭제 이유는 리포트용으로 남고, 계획 자체는 화면에서 사라져. 여러 계획은 '일괄 정리'에서 한 번에 처리할 수 있어." onSelect={code=>{onDelete(plan.id,code);setDeleteModalOpen(false);}} onClose={()=>setDeleteModalOpen(false)}/>} 
       {sessionModalOpen&&<SessionEditModal plan={plan} onSave={sessions=>{onEditSessions(plan.id,sessions);setSessionModalOpen(false);}} onClose={()=>setSessionModalOpen(false)}/>} 
     </div>
@@ -2473,6 +2503,166 @@ function WeekGoalCard({weekKey, sampleDate, weekIndex, goals, onSave, onStatus, 
   );
 }
 
+// ── 학습 시간 연구소: 원본 데이터 기반, 평가/추천 없음 ────────────────────────────
+const num = x => Number.isFinite(Number(x)) && x!==null && x!=="" ? Number(x) : null;
+const fmt = (v,d=1)=>v===null||!Number.isFinite(v)?"—":Number(v).toFixed(d);
+const dateAdd=(date,days)=>{const d=new Date(date+"T12:00:00");d.setDate(d.getDate()+days);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
+const dayOfWeek=date=>new Date(date+"T12:00:00").getDay();
+const defaultSchool=date=>[1,2,3,4,5].includes(dayOfWeek(date))?"7":"none";
+const schoolFor=(data,date)=>data.schoolDays?.[date]||defaultSchool(date);
+const schoolMinutes=mode=>mode==="6"?500:mode==="7"?560:0; // 07:00~15:20 / 16:20
+const windowMinutes=1170; // 07:00~다음 날 02:30; 기록 분석용 시간창일 뿐 공부 의무 아님
+const timeSlotInWindow=slot=>{const clock=((START_HOUR*60+Number(slot)*10)%1440);return clock>=420||clock<150;};
+const slotClock=slot=>(START_HOUR*60+Number(slot)*10)%1440;
+const isSchoolSlot=(slot,mode)=>mode!=="none"&&slotClock(slot)>=420&&slotClock(slot)<(mode==="6"?920:980);
+const validQty=p=>num(p.actualQty);
+const planStats=p=>{
+ const q=validQty(p),target=num(p.targetQty),est=num(p.expectedMinutes),actual=num(p.totalMinutes);
+ const finished=p.status==="done"||p.status==="failed"||p.date<studyDayStr();
+ const complete=target!==null&&target>0?q!==null&&q>=target:p.status==="done";
+ const started=(actual!==null&&actual>0)||(q!==null&&q>0);
+ const partial=!complete&&started;
+ return {q,target,est,actual,finished,complete,started,partial,rate:q>0&&actual!==null?actual/q:null,error:complete&&est!==null&&actual!==null?actual-est:null};
+};
+function SchoolDaySettings({date,data,setData}){
+ const value=schoolFor(data,date);
+ return <div style={{background:"#10131d",border:"1px solid #29304a",borderRadius:10,padding:10,marginBottom:12}}>
+  <div style={{color:"#a5b4fc",fontSize:"0.77rem",fontWeight:800,marginBottom:7}}>🏫 {date} 학교 일정 · 시간 분석 제외 구간</div>
+  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{[["none","학교 안 감"],["6","6교시 · 15:20"],["7","7교시 · 16:20"]].map(([v,label])=><button key={v} onClick={()=>setData(d=>({...d,schoolDays:{...(d.schoolDays||{}),[date]:v}}))} style={{padding:"0.45rem 0.65rem",background:value===v?"#6366f1":"#171a24",color:value===v?"white":"#9ca3af",border:"1px solid #343955",borderRadius:7,cursor:"pointer",fontSize:"0.75rem"}}>{label}</button>)}</div>
+  <div style={{color:"#6b7280",fontSize:"0.69rem",marginTop:7}}>요일 기본값은 월~금 7교시이며 날짜별 선택이 우선 적용돼. 학교에서 직접 색칠한 공부 시간은 전체 공부 시간에 남아.</div>
+ </div>;
+}
+function TinyLine({rows,keys,labels,height=180}){
+ const w=700,h=height,pad=30;
+ const vals=rows.flatMap(r=>keys.map(k=>r[k]).filter(v=>v!==null&&Number.isFinite(v)));
+ if(!vals.length)return <div style={{color:"#6b7280",padding:24,textAlign:"center"}}>표시할 기록 없음</div>;
+ let min=Math.min(0,...vals),max=Math.max(1,...vals);if(min===max)max=min+1;
+ const x=i=>pad+(rows.length===1?0:i*(w-2*pad)/(rows.length-1));
+ const y=v=>h-pad-(v-min)/(max-min)*(h-2*pad);
+ const colors=["#818cf8","#22c55e","#f59e0b","#ef4444","#38bdf8"];
+ return <div style={{overflowX:"auto"}}><svg viewBox={`0 0 ${w} ${h}`} style={{width:"100%",minWidth:310,maxHeight:height}} role="img" aria-label={labels.join(', ')+' 변화 그래프'}>
+  <line x1={pad} y1={h-pad} x2={w-pad} y2={h-pad} stroke="#42465a"/>
+  <line x1={pad} y1={pad} x2={pad} y2={h-pad} stroke="#42465a"/>
+  {[0,.5,1].map(t=><g key={t}><line x1={pad} x2={w-pad} y1={y(min+(max-min)*t)} y2={y(min+(max-min)*t)} stroke="#222637"/><text x={pad-5} y={y(min+(max-min)*t)+4} fill="#6b7280" fontSize="11" textAnchor="end">{fmt(min+(max-min)*t,1)}</text></g>)}
+  {keys.map((k,j)=>{const segments=[];let seg=[];rows.forEach((r,i)=>{if(r[k]!==null&&Number.isFinite(r[k]))seg.push(`${x(i)},${y(r[k])}`);else if(seg.length){segments.push(seg);seg=[];}});if(seg.length)segments.push(seg);return <g key={k}>{segments.map((points,z)=><polyline key={z} fill="none" stroke={colors[j%colors.length]} strokeWidth="2.5" points={points.join(" ")}/>)}{rows.map((r,i)=>r[k]!==null&&Number.isFinite(r[k])?<circle key={i} cx={x(i)} cy={y(r[k])} r="3" fill={colors[j%colors.length]}><title>{r.label}: {labels[j]} {fmt(r[k],2)}</title></circle>:null)}</g>})}
+  {rows.map((r,i)=>(rows.length<=14||i%Math.ceil(rows.length/12)===0)?<text key={i} x={x(i)} y={h-8} fontSize="10" fill="#777d91" textAnchor="middle">{r.label.slice(5)}</text>:null)}
+ </svg><div style={{display:"flex",gap:14,flexWrap:"wrap",fontSize:"0.72rem",marginTop:4}}>{labels.map((l,i)=><span key={l} style={{color:colors[i]}}>● {l}</span>)}</div></div>;
+}
+function StudyAnalytics({data,setData}){
+ const [period,setPeriod]=useState("30");
+ const [subject,setSubject]=useState("전체");
+ const [activity,setActivity]=useState("전체");
+ const [anchor,setAnchor]=useState(studyDayStr());
+ const [customStart,setCustomStart]=useState("16:30");
+ const [customEnd,setCustomEnd]=useState("17:30");
+ const [customType,setCustomType]=useState("휴식");
+ const [customDate,setCustomDate]=useState(studyDayStr());
+ const days=Number(period);
+ const first=dateAdd(anchor,1-days);
+ const dates=Array.from({length:days},(_,i)=>dateAdd(first,i));
+ const plans=(data.plans2||[]).filter(p=>p.status!=="deletedLog"&&p.date>=first&&p.date<=anchor&&(!subject||subject==="전체"||p.subject===subject)&&(!activity||activity==="전체"||p.activity===activity));
+ const analyzed=plans.map(p=>({...p,_s:planStats(p)}));
+ const finished=analyzed.filter(p=>p._s.finished);
+ const done=finished.filter(p=>p._s.complete).length,partial=finished.filter(p=>p._s.partial).length;
+ const notStarted=finished.filter(p=>!p._s.started&&!p._s.complete).length;
+ const started=finished.filter(p=>p._s.started).length;
+ const rated=finished.filter(p=>num(p.planRating)!==null&&num(p.planRating)>=1&&num(p.planRating)<=5);
+ const totalActual=analyzed.reduce((n,p)=>n+(p._s.actual||0),0);
+ const qtyRows=analyzed.filter(p=>p.activity&&p._s.q>0&&p._s.actual!==null);
+ const totalQty=qtyRows.reduce((n,p)=>n+p._s.q,0);
+ const measuredMinutes=qtyRows.reduce((n,p)=>n+p._s.actual,0);
+ const full=finished.filter(p=>p._s.complete&&p._s.est!==null&&p._s.actual!==null);
+ const errors=full.map(p=>p._s.error);
+ const mae=errors.length?errors.reduce((a,v)=>a+Math.abs(v),0)/errors.length:null;
+ const wape=full.reduce((a,p)=>a+(p._s.actual||0),0)>0?errors.reduce((a,v)=>a+Math.abs(v),0)/full.reduce((a,p)=>a+p._s.actual,0)*100:null;
+ const groupSize=days===1?1:days===7?1:days===30?1:7;
+ const groups=[];
+ for(let i=0;i<dates.length;i+=groupSize){
+  const ds=dates.slice(i,i+groupSize),bucket=analyzed.filter(p=>ds.includes(p.date));
+  const valid=bucket.filter(p=>p._s.complete&&p._s.est!==null&&p._s.actual!==null);
+  const withRate=bucket.filter(p=>p.activity&&p._s.q>0&&p._s.actual!==null);
+  const rr=bucket.filter(p=>num(p.planRating)>=1&&num(p.planRating)<=5);
+  const completed=bucket.filter(p=>p._s.finished);
+  const starCounts=[1,2,3,4,5].map(k=>rr.filter(p=>Number(p.planRating)===k).length);
+  groups.push({label:ds[0],expected:valid.length?valid.reduce((n,p)=>n+p._s.est,0):null,actual:valid.length?valid.reduce((n,p)=>n+p._s.actual,0):null,error:valid.length?valid.reduce((n,p)=>n+p._s.error,0):null,rate:withRate.length?withRate.reduce((n,p)=>n+p._s.actual,0)/withRate.reduce((n,p)=>n+p._s.q,0):null,stars:rr.length?rr.reduce((n,p)=>n+Number(p.planRating),0)/rr.length:null,star1:rr.length?starCounts[0]:null,star2:rr.length?starCounts[1]:null,star3:rr.length?starCounts[2]:null,star4:rr.length?starCounts[3]:null,star5:rr.length?starCounts[4]:null,completion:completed.length?100*completed.filter(p=>p._s.complete).length/completed.length:null,partial:completed.length?100*completed.filter(p=>p._s.partial).length/completed.length:null,started:completed.length?100*completed.filter(p=>p._s.started).length/completed.length:null});
+ }
+ // 타임테이블은 '공부했다'는 표시만 기록. 활동 속도·계획 성공·예측 오차로 유입되지 않음.
+ const timeDaily=dates.map(ds=>{
+  const mode=schoolFor(data,ds);
+  const painted=data.timetable?.[ds]||{};
+  const labels=data.timeLabels?.[ds]||[];
+  const schoolSlots=new Set(),studySlots=new Set(),markedSlots=new Set();
+  for(let i=0;i<TOTAL_SLOTS;i++){
+   if(!timeSlotInWindow(i))continue;
+   if(isSchoolSlot(i,mode))schoolSlots.add(i);
+   if(SUBJECTS.includes(painted[i]))studySlots.add(i);
+  }
+  const labelCounts={"휴식":0,"이탈":0,"개인 일정":0};
+  for(const label of labels){
+   const start=Number(label.start),end=Number(label.end);
+   if(!Number.isFinite(start)||!Number.isFinite(end))continue;
+   for(let i=0;i<TOTAL_SLOTS;i++){
+    if(!timeSlotInWindow(i)||schoolSlots.has(i)||studySlots.has(i))continue;
+    const t=slotClock(i);const offset=t<420?t+1440:t;
+    if(offset>=start&&offset<end&&!markedSlots.has(i)){
+     markedSlots.add(i);if(labelCounts[label.type]!==undefined)labelCounts[label.type]++;
+    }
+   }
+  }
+  const availableSlots=Array.from({length:TOTAL_SLOTS},(_,i)=>i).filter(i=>timeSlotInWindow(i)&&!schoolSlots.has(i));
+  const paintedAvailable=availableSlots.filter(i=>studySlots.has(i)).length;
+  const unrecorded=Math.max(0,availableSlots.length-paintedAvailable-markedSlots.size)*10;
+  return {date:ds,study:studySlots.size*10,available:availableSlots.length*10,rest:labelCounts["휴식"]*10,off:labelCounts["이탈"]*10,personal:labelCounts["개인 일정"]*10,unrecorded,school:schoolSlots.size*10};
+ });
+ const timeGroups=[];
+ for(let i=0;i<timeDaily.length;i+=groupSize){const slice=timeDaily.slice(i,i+groupSize);timeGroups.push({label:slice[0].date,...Object.fromEntries(["study","available","rest","off","personal","unrecorded","school"].map(k=>[k,slice.reduce((n,r)=>n+r[k],0)/60]))});}
+ const card={background:"#10131c",border:"1px solid #252a3c",borderRadius:12,padding:14,marginBottom:12};
+ const rowStyle={display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12};
+ const filteredByGroup=ACTIVITIES.flatMap(a=>SUBJECTS.map(sub=>{
+  const ps=(data.plans2||[]).filter(p=>p.date>=first&&p.date<=anchor&&p.subject===sub&&p.activity===a&&p.status!=="deletedLog");
+  const doneP=ps.filter(p=>planStats(p).finished);
+  if(!ps.length)return null;
+  const withQ=ps.filter(p=>planStats(p).rate!==null);
+  const e=ps.filter(p=>planStats(p).error!==null);
+  const stars=ps.filter(p=>num(p.planRating)>=1&&num(p.planRating)<=5);
+  return {subject:sub,activity:a,count:doneP.length,complete:doneP.filter(p=>planStats(p).complete).length,partial:doneP.filter(p=>planStats(p).partial).length,none:doneP.filter(p=>!planStats(p).started&&!planStats(p).complete).length,avg:withQ.length?withQ.reduce((n,p)=>n+p.totalMinutes,0)/withQ.reduce((n,p)=>n+Number(p.actualQty),0):null,expected:e.length?e.reduce((n,p)=>n+Number(p.expectedMinutes),0):null,actual:e.length?e.reduce((n,p)=>n+Number(p.totalMinutes),0):null,starCounts:[1,2,3,4,5].map(k=>stars.filter(p=>Number(p.planRating)===k).length)};
+ })).filter(Boolean).filter(r=>(subject==="전체"||r.subject===subject)&&(activity==="전체"||r.activity===activity));
+ function exportCSV(){
+  const headers=["date","subject","activity","content","status","targetQty","actualQty","expectedMinutes","actualMinutes","errorMinutes","rating","started","completed"];
+  const rows=[headers,...analyzed.map(p=>[p.date,p.subject,p.activity||"",p.content,p.status,p.targetQty??"",p.actualQty??"",p.expectedMinutes??"",p.totalMinutes??"",p._s.error??"",p.planRating??"",p._s.started?1:0,p._s.complete?1:0])];
+  const csv='\ufeff'+rows.map(r=>r.map(v=>'"'+String(v??'').replace(/"/g,'""')+'"').join(',')).join('\r\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`STUDY_OS_${first}_${anchor}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }
+ function exportReport(){
+  const text=[`STUDY_OS 학습 데이터 보고서`,`기간: ${first} ~ ${anchor}`,`분석 과목: ${subject} / 활동: ${activity}`,`마감 계획: ${finished.length} / 완료 ${done} / 부분 ${partial} / 미시작 ${notStarted}`,`착수율: ${finished.length?fmt(started/finished.length*100):'—'}%`,`완료율: ${finished.length?fmt(done/finished.length*100):'—'}%`,`실제 측정 학습 시간: ${totalActual}분`,`단위당 시간: ${totalQty?fmt(measuredMinutes/totalQty,2):'—'}`,`평균 절대 예측 오차: ${fmt(mae,2)}분`,`WAPE: ${fmt(wape,2)}%`,`직접 입력 별점: ${rated.length?fmt(rated.reduce((n,p)=>n+Number(p.planRating),0)/rated.length,2):'—'}`,``,...filteredByGroup.map(r=>`${r.subject} / ${r.activity} | 마감 ${r.count}, 완료 ${r.complete}, 부분 ${r.partial}, 미시작 ${r.none}, 분/단위 ${fmt(r.avg,2)}, 예상 ${fmt(r.expected)}분, 실제 ${fmt(r.actual)}분, 별점 1~5개수 ${r.starCounts.join('/')}`),``,`시간 사용 (타임테이블 기준, 10분 단위)`,...timeDaily.map(r=>`${r.date} | 공부 ${r.study}분 | 휴식 ${r.rest}분 | 확인 이탈 ${r.off}분 | 개인 일정 ${r.personal}분 | 미기록 ${r.unrecorded}분 | 학교 제외 ${r.school}분`)];
+  const blob=new Blob(['\ufeff'+text.join('\n')],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`STUDY_OS_REPORT_${first}_${anchor}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }
+ function saveTimeLabel(){
+  const [sh,sm]=customStart.split(':').map(Number),[eh,em]=customEnd.split(':').map(Number);
+  const start=sh*60+sm+(sh<7?1440:0),end=eh*60+em+(eh<7?1440:0);
+  if(end<=start||start<420||end>1590){alert('시간 범위를 확인해줘. 07:00~다음 날 02:30 사이로 입력해.');return;}
+  setData(d=>({...d,timeLabels:{...(d.timeLabels||{}),[customDate]:[...(d.timeLabels?.[customDate]||[]),{id:makeRandomId(),type:customType,start,end}]}}));
+ }
+ return <div>
+  <div style={{...card}}><h2 style={{color:'#e5e7eb',fontSize:'1.05rem',marginBottom:8}}>📊 학습 데이터 분석 · 원본 수치만 표시</h2>
+   <div style={rowStyle}><input type="date" value={anchor} onChange={e=>setAnchor(e.target.value)} style={{...inp,flex:'1 1 150px'}}/><select value={period} onChange={e=>setPeriod(e.target.value)} style={{...inp,flex:'1 1 100px'}}>{[["1","1일"],["7","1주"],["30","1달"],["90","3달"]].map(([v,l])=><option key={v} value={v}>{l}</option>)}</select></div>
+   <div style={rowStyle}><select value={subject} onChange={e=>setSubject(e.target.value)} style={{...inp,flex:1}}><option>전체</option>{SUBJECTS.map(s=><option key={s}>{s}</option>)}</select><select value={activity} onChange={e=>setActivity(e.target.value)} style={{...inp,flex:1}}><option>전체</option>{ACTIVITIES.map(s=><option key={s}>{s}</option>)}</select></div>
+   <div style={{color:'#9ca3af',fontSize:'0.72rem'}}>분석 기간 {first} ~ {anchor} · 기록이 없는 항목은 0과 구별하여 — 표시</div>
+  </div>
+  <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,marginBottom:12}}>{[["마감된 계획",finished.length+"개"],["완료 / 부분 / 미시작",`${done} / ${partial} / ${notStarted}`],["완료율",finished.length?fmt(done/finished.length*100)+'%':'—'],["착수율",finished.length?fmt(started/finished.length*100)+'%':'—'],["실측 학습 시간",fmt(totalActual,0)+'분'],["단위당 평균",totalQty?fmt(measuredMinutes/totalQty,2):'—'],["예측 MAE",mae!==null?fmt(mae,2)+'분':'—'],["예측 WAPE",wape!==null?fmt(wape,2)+'%':'—']].map(([k,v])=><div key={k} style={card}><div style={{color:'#9ca3af',fontSize:'0.68rem'}}>{k}</div><div style={{color:'#e5e7eb',fontWeight:800,fontSize:'1.1rem',marginTop:4}}>{v}</div></div>)}</div>
+  {[["예상 시간 vs 실제 시간",["expected","actual"],["예상(분)","실제(분)"]],["예상 시간 오차 (실제−예상)",["error"],["오차(분)"]],["단위당 실제 소요 시간",["rate"],["분/문제 또는 분/쪽"]],["계획 완료율·착수율·부분 수행률",["completion","started","partial"],["완료율(%)","착수율(%)","부분 수행률(%)"]],["직접 입력 별점 평균",["stars"],["별점(1~5)"]],["별점 1~5점 각각의 개수",["star1","star2","star3","star4","star5"],["★1 개수","★2 개수","★3 개수","★4 개수","★5 개수"]]].map(([title,keys,labels])=><div key={title} style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.88rem',marginBottom:9}}>{title}</h3><TinyLine rows={groups} keys={keys} labels={labels}/></div>)}
+  <div style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.9rem',marginBottom:10}}>과목 × 4개 활동 · 원본 집계</h3><div style={{overflowX:'auto'}}><table style={{borderCollapse:'collapse',width:'100%',fontSize:'0.7rem',color:'#d1d5db',whiteSpace:'nowrap'}}><thead><tr>{['과목','활동','마감','완료','부분','미시작','분/단위','예상(분)','실제(분)','★1','★2','★3','★4','★5'].map(k=><th key={k} style={{padding:7,borderBottom:'1px solid #30364a'}}>{k}</th>)}</tr></thead><tbody>{filteredByGroup.map(r=><tr key={r.subject+r.activity}>{[r.subject,r.activity,r.count,r.complete,r.partial,r.none,fmt(r.avg,2),fmt(r.expected,0),fmt(r.actual,0),...r.starCounts].map((v,i)=><td key={i} style={{padding:7,borderBottom:'1px solid #202638',textAlign:i>1?'right':'left'}}>{v}</td>)}</tr>)}</tbody></table>{!filteredByGroup.length&&<p style={{color:'#6b7280',padding:15}}>해당 기간에 분류된 계획 없음</p>}</div></div>
+  <div style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.9rem',marginBottom:9}}>시간 사용 · 직접 색칠 포함</h3><p style={{color:'#9ca3af',fontSize:'0.72rem',marginBottom:10}}>학교 시간은 분석 가능 시간에서 제외. 직접 색칠은 총공부 시간에만 포함하고, 계획 통계에는 반영하지 않아. 미기록은 낭비로 단정하지 않아.</p>
+   <TinyLine rows={timeGroups} keys={['study','rest','off','personal','unrecorded']} labels={['색칠된 공부(시간)','휴식(시간)','확인 이탈(시간)','개인 일정(시간)','미기록(시간)']}/>
+   <div style={{color:'#9ca3af',fontSize:'0.72rem',marginTop:8}}>전체 색칠 공부 {fmt(timeDaily.reduce((n,r)=>n+r.study,0)/60,1)}시간 · 확인 이탈 {fmt(timeDaily.reduce((n,r)=>n+r.off,0)/60,1)}시간 · 미기록 {fmt(timeDaily.reduce((n,r)=>n+r.unrecorded,0)/60,1)}시간</div>
+  </div>
+  <div style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.9rem',marginBottom:10}}>휴식·이탈·개인 일정 기록 (선택)</h3><div style={rowStyle}><input type="date" value={customDate} onChange={e=>setCustomDate(e.target.value)} style={{...inp,flex:1}}/><select value={customType} onChange={e=>setCustomType(e.target.value)} style={{...inp,flex:1}}>{['휴식','이탈','개인 일정'].map(x=><option key={x}>{x}</option>)}</select></div><div style={rowStyle}><input type="time" value={customStart} onChange={e=>setCustomStart(e.target.value)} style={{...inp,flex:1}}/><input type="time" value={customEnd} onChange={e=>setCustomEnd(e.target.value)} style={{...inp,flex:1}}/><button onClick={saveTimeLabel} style={{...inp,width:'auto',background:'#6366f1',color:'white',cursor:'pointer'}}>기록</button></div>
+   {(data.timeLabels?.[customDate]||[]).map(t=><div key={t.id} style={{display:'flex',justifyContent:'space-between',color:'#9ca3af',fontSize:'0.74rem',padding:4}}><span>{t.type} · {String(Math.floor(t.start%1440/60)).padStart(2,'0')}:{String(t.start%60).padStart(2,'0')}~{String(Math.floor(t.end%1440/60)).padStart(2,'0')}:{String(t.end%60).padStart(2,'0')}</span><button onClick={()=>setData(d=>({...d,timeLabels:{...(d.timeLabels||{}),[customDate]:(d.timeLabels?.[customDate]||[]).filter(x=>x.id!==t.id)}}))} style={{background:'none',border:0,color:'#ef4444',cursor:'pointer'}}>삭제</button></div>)}
+  </div>
+  <div style={{...rowStyle,marginBottom:24}}><button onClick={exportCSV} style={{...inp,flex:1,background:'#232c45',color:'#e5e7eb',cursor:'pointer'}}>CSV 원본 다운로드</button><button onClick={exportReport} style={{...inp,flex:1,background:'#43366e',color:'#e5e7eb',cursor:'pointer'}}>TXT 보고서 다운로드</button><button onClick={()=>window.print()} style={{...inp,flex:1,background:'#2c4739',color:'#e5e7eb',cursor:'pointer'}}>인쇄 / PDF 저장</button></div>
+ </div>;
+}
+
 // ── 스케줄 뷰 (타임테이블 + 계획 동시) ──────────────────────────────────────────
 // ── 밤 마무리 한줄 (매일 밤 쓰는 전용 메모, 취소/수정 가능) ────────────────────────
 function NightNoteCard({date, note, onSave, onDelete}) {
@@ -2601,7 +2791,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
         if(!list.some(p=>p.id===plan.id+"_m_"+tom)){
           // 이월본은 "내일 다시 할 계획"일 뿐, 오늘 이미 기록된 공부시간·실패사유까지 복사하면 안 됨
           // rootId는 최초 원본을 계속 이어받아서, 며칠 연속 실패해도 "같은 계획의 반복 시도"로 추적 가능
-          const { totalMinutes, sessions, failReason:_fr, ...rest } = plan;
+          const { totalMinutes, sessions, actualQty:_aq, planRating:_pr, failReason:_fr, ...rest } = plan;
           const rootId = plan.rootId || plan.id;
           list.push({...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",rootId,note:"[이월] "+plan.content.slice(0,30)});
         }
@@ -2642,7 +2832,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
         list[idx]=plan;
         const tom=nextDay(plan.date);
         if(!list.some(p=>p.id===plan.id+"_m_"+tom)){
-          const {totalMinutes,sessions,failReason:_fr,deleteReason:_dr,deletedAt:_da,previousStatus:_ps,...rest}=plan;
+          const {totalMinutes,sessions,actualQty:_aq,planRating:_pr,failReason:_fr,deleteReason:_dr,deletedAt:_da,previousStatus:_ps,...rest}=plan;
           const rootId=plan.rootId||plan.id;
           list.push({...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",rootId,note:"[이월] "+plan.content.slice(0,30)});
         }
@@ -2722,6 +2912,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
         </div>
       </div>
 
+      <SchoolDaySettings date={date} data={data} setData={setData}/>
       {/* 과목 팔레트 */}
       <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"1rem"}}>
         {SUBJECTS.map(sub=>{
@@ -3111,74 +3302,6 @@ function AdhocStudyTimerModal({onStart,onClose,activeTimer}) {
 }
 
 // ── 메인 ──────────────────────────────────────────────────────────────────────
-
-function PerformanceBoard({tasks,onChange}) {
-  const [open,setOpen]=useState(false);
-  const [subject,setSubject]=useState("");
-  const [title,setTitle]=useState("");
-  const [due,setDue]=useState(todayStr());
-  const [details,setDetails]=useState("");
-  const [file,setFile]=useState(null);
-  const [busy,setBusy]=useState(false);
-  const [error,setError]=useState("");
-  const field={display:"block",width:"100%",boxSizing:"border-box",padding:9,marginBottom:8,background:"#141824",color:"#f3f4f6",border:"1px solid #303747",borderRadius:8};
-  async function add(){
-    if(!title.trim()||!due){setError("평가명과 날짜를 입력해줘.");return;}
-    setBusy(true);setError("");
-    try{
-      let attachment=null;
-      if(file){
-        if(!["image/jpeg","image/png","image/webp"].includes(file.type))throw Error("현재 Storage 설정은 JPG·PNG·WEBP만 지원해. PDF는 일정만 등록해줘.");
-        if(file.size>15*1024*1024)throw Error("사진은 15MB 이하여야 해.");
-        if(typeof navigator!=="undefined"&&navigator.onLine===false)throw Error("사진 업로드는 인터넷 연결이 필요해. 오프라인에서는 첨부 없이 일정만 저장할 수 있어.");
-        const path=`performance/${makeRandomId()}.${file.type.split("/")[1].replace("jpeg","jpg")}`;
-        const res=await fetch(`${SUPABASE_URL}/storage/v1/object/study-images/${path}`,{method:"POST",headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`,"Content-Type":file.type},body:file});
-        if(!res.ok)throw Error(`사진 업로드 실패 (${res.status})`);
-        attachment={path,name:file.name};
-      }
-      onChange([...tasks,{id:makeRandomId(),subject:subject.trim(),title:title.trim(),due,details,attachment,done:false,createdAt:Date.now()}]);
-      setSubject("");setTitle("");setDue(todayStr());setDetails("");setFile(null);setOpen(false);
-    }catch(e){setError(e.message||"등록 실패");}finally{setBusy(false);}
-  }
-  async function openPhoto(t){
-    try{
-      const res=await fetch(`${SUPABASE_URL}/storage/v1/object/authenticated/study-images/${t.attachment.path}`,{headers:{apikey:SUPABASE_KEY,Authorization:`Bearer ${SUPABASE_KEY}`}});
-      if(!res.ok)throw Error(`사진 조회 실패 (${res.status})`);
-      const blob=await res.blob();const url=URL.createObjectURL(blob);
-      const w=window.open(url,"_blank");if(!w)throw Error("팝업 차단을 해제해줘.");
-      setTimeout(()=>URL.revokeObjectURL(url),120000);
-    }catch(e){setError(e.message||"사진 조회 실패");}
-  }
-  const sorted=[...tasks].sort((a,b)=>Number(!!a.done)-Number(!!b.done)||(a.due||"").localeCompare(b.due||""));
-  return <section style={{border:"1px solid #343b51",borderRadius:12,background:"#0c101a",padding:15,marginBottom:18}}>
-    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:12}}>
-      <div><strong style={{color:"#f3f4f6"}}>📌 수행평가 일정</strong><div style={{color:"#9ca3af",fontSize:12,marginTop:3}}>미완료 {tasks.filter(t=>!t.done).length}건 · 날짜순</div></div>
-      <button onClick={()=>setOpen(v=>!v)} style={{background:"#6366f1",border:0,borderRadius:8,color:"white",padding:"8px 12px",cursor:"pointer"}}>{open?"닫기":"+ 등록"}</button>
-    </div>
-    {open&&<div style={{padding:10,background:"#111725",borderRadius:9,marginBottom:10}}>
-      <input style={field} placeholder="과목" value={subject} onChange={e=>setSubject(e.target.value)}/>
-      <input style={field} placeholder="수행평가명 (필수)" value={title} onChange={e=>setTitle(e.target.value)}/>
-      <input style={field} type="date" value={due} onChange={e=>setDue(e.target.value)}/>
-      <textarea style={{...field,minHeight:70}} placeholder="준비물 · 평가 내용 · 제출 방식" value={details} onChange={e=>setDetails(e.target.value)}/>
-      <label style={{color:"#a5b4fc",fontSize:12}}>공지 사진 (선택)<input type="file" accept="image/jpeg,image/png,image/webp" onChange={e=>setFile(e.target.files?.[0]||null)} style={{display:"block",margin:"7px 0 12px",maxWidth:"100%"}}/></label>
-      <button onClick={add} disabled={busy} style={{background:"#22c55e",border:0,borderRadius:8,padding:"8px 14px",fontWeight:700}}>{busy?"저장 중...":"일정 저장"}</button>
-    </div>}
-    {error&&<p style={{color:"#fca5a5",fontSize:12}}>{error}</p>}
-    {sorted.length===0?<div style={{color:"#6b7280",fontSize:13}}>등록된 수행평가가 없어.</div>:sorted.map(t=>{
-      const days=Math.round((new Date(`${t.due}T00:00:00`)-new Date(`${todayStr()}T00:00:00`))/86400000);
-      return <div key={t.id} style={{display:"flex",gap:9,borderTop:"1px solid #272c3b",padding:"10px 0",opacity:t.done?0.55:1}}>
-        <input type="checkbox" checked={!!t.done} onChange={e=>onChange(tasks.map(x=>x.id===t.id?{...x,done:e.target.checked}:x))}/>
-        <div style={{flex:1,minWidth:0}}><div style={{fontSize:13,color:"#f3f4f6",fontWeight:700,textDecoration:t.done?"line-through":"none"}}>{t.subject&&`${t.subject} · `}{t.title}</div>
-          <div style={{color:"#a5b4fc",fontSize:12,marginTop:4}}>{t.due} · {t.done?"완료":days===0?"D-DAY":days>0?`D-${days}`:`${-days}일 지남`}</div>
-          {t.details&&<div style={{color:"#9ca3af",fontSize:12,whiteSpace:"pre-wrap",marginTop:5}}>{t.details}</div>}
-          {t.attachment&&<button onClick={()=>openPhoto(t)} style={{border:0,background:"none",color:"#a5b4fc",padding:"6px 0",cursor:"pointer"}}>📎 공지 사진 보기</button>}
-        </div>
-        <button onClick={()=>{if(window.confirm("일정을 삭제할까?"))onChange(tasks.filter(x=>x.id!==t.id));}} style={{background:"none",border:0,color:"#9ca3af",cursor:"pointer",alignSelf:"start"}}>×</button>
-      </div>;
-    })}
-  </section>;
-}
-
 export default function App() {
   // 화면 state와 저장 state를 분리한다. UI에서 일어나는 모든 setData는 아래 래퍼를 통해
   // 항목별 버전/tombstone을 자동 기록한다. 서버/다른 탭에서 병합된 데이터만 setDataRaw를 쓴다.
@@ -3486,6 +3609,7 @@ export default function App() {
   const tabs=[
     {id:"schedule",label:"계획+타임테이블"},
     {id:"goals",label:"목표"},
+    {id:"analytics",label:"시간 분석"},
     {id:"calendar",label:"달력"},
     {id:"wrongs",label:`오답 (${data.wrongs.length})`},
     {id:"records",label:"시·일기"},
@@ -3557,8 +3681,6 @@ export default function App() {
 
       <main style={{maxWidth:900,margin:"0 auto",padding:"1.4rem 1rem"}}>
 
-        <PerformanceBoard tasks={data.performanceTasks||[]} onChange={performanceTasks=>setData(d=>({...d,performanceTasks}))}/>
-
         {/* 리포트 내보내기 버튼 */}
         <div style={{display:"flex",gap:7,marginBottom:"1.2rem",flexWrap:"wrap"}}>
           <button onClick={()=>setModal("report")} style={{
@@ -3596,6 +3718,7 @@ export default function App() {
         <div className="fade" key={tab}>
           {tab==="schedule"&&<ScheduleView data={data} setData={setData} initDate={scheduleDate}
             activeTimer={activeTimer} onStartTimer={startTimer} onStopTimer={stopTimer}/>}
+          {tab==="analytics"&&<StudyAnalytics data={data} setData={setData}/>}
           {tab==="goals"&&<GoalOverview data={data} setData={setData}/>}
           {tab==="calendar"&&<CalendarView data={data} setData={setData} onSelectDate={d=>{setScheduleDate(d);setTab("schedule");}}/>}
           {tab==="records"&&<AnalogRecordsView data={data} setData={setData}/>}
