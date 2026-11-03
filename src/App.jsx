@@ -28,6 +28,8 @@ const DELETE_REASONS = {
   OTHER:        { label:"기타", desc:"위 항목에 해당하지 않음", color:"#6b7280" },
 };
 
+const FILLER_SLOT = "미집계"; // 불가피한 시간·타이머로 따로 측정하지 않은 시간: 공부량에서 제외
+const FILLER_COLOR = { bg:"#475569", light:"#47556940", text:"#cbd5e1" };
 const SUBJECT_COLORS = {
   "전과목 공통": { bg:"#818cf8", light:"#818cf830", text:"#c7d2fe" }, // 인디고
   수학:   { bg:"#eab308", light:"#eab30830", text:"#fde047" }, // 노랑
@@ -75,8 +77,6 @@ const TOTAL_HOURS = 24;
 const TOTAL_SLOTS = TOTAL_HOURS * SLOTS_PER_HOUR; // 144
 
 const initialData = {
-  adhocSessions: [],
-  slotOwners: {}, // date -> slot -> session identifier
   timetable: {},      // { "2024-01-01": { [slotIdx]: subjectName } }
   plans: {},          // { "2024-01-01": "오늘 계획 텍스트" }
   wrongs: [],
@@ -136,8 +136,8 @@ const LEGACY_IDB_NAME = "studyos_v2";
 const IDB_STORE = "state";
 const IDB_KEY = "main";
 const CLIENT_ID_KEY = "studyos_client_id_v2";
-const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords", "adhocSessions"];
-const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes", "schoolDays", "timeLabels", "slotOwners"];
+const ARRAY_ENTITY_FIELDS = ["wrongs", "plans2", "goalItems", "analogRecords"];
+const MAP_ENTITY_FIELDS = ["plans", "folderNames", "weekGoals", "monthGoals", "nightNotes", "schoolDays", "timeLabels"];
 const TIMETABLE_FIELD = "timetable";
 
 function makeRandomId() {
@@ -835,11 +835,11 @@ function studyDayStr() {
   return `${shifted.getFullYear()}-${String(shifted.getMonth()+1).padStart(2,"0")}-${String(shifted.getDate()).padStart(2,"0")}`;
 }
 function calcMinutes(daySlots) {
-  return Object.keys(daySlots||{}).length * 10;
+  return Object.values(daySlots||{}).filter(sub=>SUBJECTS.includes(sub)).length * 10;
 }
 function calcSubjectMinutes(daySlots) {
   const r={};
-  for(const [,sub] of Object.entries(daySlots||{})) r[sub]=(r[sub]||0)+10;
+  for(const [,sub] of Object.entries(daySlots||{})) if(SUBJECTS.includes(sub)) r[sub]=(r[sub]||0)+10;
   return r;
 }
 
@@ -1063,67 +1063,13 @@ function BatchPlanReviewModal({date, plans, onApply, onClose}) {
 function timeToMinutesOfDay(hhmm){ const [h,m]=hhmm.split(":").map(Number); return h*60+m; }
 function minutesOfDayToTime(mins){ const h=Math.floor(mins/60)%24, m=mins%60; return `${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`; }
 
-// Single source of truth for editable study intervals. Painted slots are a 10-minute projection.
-function syncLocalDate(ms){const d=new Date(ms);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;}
-function syncSlotAt(ms){const d=new Date(ms);let day=new Date(d.getFullYear(),d.getMonth(),d.getDate());if(d.getHours()<START_HOUR)day.setDate(day.getDate()-1);return {date:syncLocalDate(day.getTime()),slot:Math.floor((((d.getHours()*60+d.getMinutes())-START_HOUR*60+1440)%1440)/10)};}
-function syncInterval(s){const start=Number(s.startedAt),end=Number(s.endedAt??(start+Number(s.minutes||0)*60000));return Number.isFinite(start)&&Number.isFinite(end)&&end>start?{start,end}:null;}
-function syncParts(s,cutStart,cutEnd){const r=syncInterval(s);if(!r||r.end<=cutStart||r.start>=cutEnd)return [s];const out=[];for(const [a,b] of [[r.start,Math.min(r.end,cutStart)],[Math.max(r.start,cutEnd),r.end]])if(b>a)out.push({...s,id:makeRandomId(),startedAt:a,endedAt:b,minutes:(b-a)/60000,date:syncSlotAt(a).date});return out;}
-function syncNormalize(d){return {...d,plans2:(d.plans2||[]).map(p=>({...p,sessions:(p.sessions||[]).map(s=>({...s,id:s.id||makeRandomId()}))})),adhocSessions:(d.adhocSessions||[]).map(s=>({...s,id:s.id||makeRandomId()})),slotOwners:d.slotOwners||{}};}
-function syncRecalc(plans){return plans.map(p=>({...p,totalMinutes:(p.sessions||[]).reduce((n,s)=>{const r=syncInterval(s);return n+(r?(r.end-r.start)/60000:0)},0)}));}
-function syncCut(d,start,end){
-  const next={...d,plans2:syncRecalc((d.plans2||[]).map(p=>({...p,sessions:(p.sessions||[]).flatMap(s=>syncParts(s,start,end))}))),adhocSessions:(d.adhocSessions||[]).flatMap(s=>syncParts(s,start,end))};
-  const owners={...(d.slotOwners||{})},tt={...d.timetable};
-  const remaining=[...(next.plans2||[]).flatMap(p=>(p.sessions||[]).map(s=>({...s,subject:p.subject}))),...(next.adhocSessions||[])];
-  for(let t=Math.floor(start/600000)*600000;t<end;t+=600000){
-    const a=syncSlotAt(t),oldOwner=owners[a.date]?.[a.slot];
-    if(!oldOwner)continue; // Legacy/manual paint without ownership is never silently erased.
-    const replacement=remaining.find(s=>{const r=syncInterval(s);return r&&r.start<t+600000&&r.end>t;});
-    owners[a.date]={...(owners[a.date]||{})};tt[a.date]={...(tt[a.date]||{})};
-    if(replacement){owners[a.date][a.slot]=replacement.id;tt[a.date][a.slot]=replacement.subject;}
-    else {delete owners[a.date][a.slot];delete tt[a.date][a.slot];}
-  }
-  return {...next,slotOwners:owners,timetable:tt};
-}
-function syncSlotStart(date,slot){return new Date(`${date}T00:00:00`).getTime()+(START_HOUR*60+Number(slot)*10)*60000;}
-function syncPaint(d,date,slot,subject){
-  const start=syncSlotStart(date,slot),end=start+600000;
-  let next=syncCut(d,start,end);
-  const tt={...next.timetable,[date]:{...(next.timetable?.[date]||{})}};
-  if(subject)tt[date][slot]=subject;else delete tt[date][slot];
-  const owners={...(next.slotOwners||{}),[date]:{...(next.slotOwners?.[date]||{})}};
-  delete owners[date][slot];
-  // Manual painting is an editable study session, not a plan completion event.
-  if(subject){const id=makeRandomId();next.adhocSessions=[...(next.adhocSessions||[]),{id,subject,content:"타임테이블 직접 기록",date,startedAt:start,endedAt:end,minutes:10,manual:true}];owners[date][slot]=id;}
-  return {...next,timetable:tt,slotOwners:owners};
-}
-function syncAddSession(d,session,planId){
-  const r=syncInterval(session);if(!r)return d;
-  let next=syncCut(d,r.start,r.end);const id=session.id||makeRandomId();const record={...session,id,minutes:(r.end-r.start)/60000,date:syncSlotAt(r.start).date};
-  if(planId!=null){next.plans2=syncRecalc((next.plans2||[]).map(p=>p.id===planId?{...p,sessions:[...(p.sessions||[]),record]}:p));}
-  else next.adhocSessions=[...(next.adhocSessions||[]),record];
-  const tt={...next.timetable},owners={...(next.slotOwners||{})};
-  for(let t=Math.floor(r.start/600000)*600000;t<r.end;t+=600000){const a=syncSlotAt(t);tt[a.date]={...(tt[a.date]||{}),[a.slot]:session.subject};owners[a.date]={...(owners[a.date]||{}),[a.slot]:id};}
-  return {...next,timetable:tt,slotOwners:owners};
-}
-function syncEditPlan(d,planId,newSessions){
-  const plan=(d.plans2||[]).find(p=>p.id===planId);if(!plan)return d;
-  const oldIds=new Set((plan.sessions||[]).map(s=>s.id).filter(Boolean));
-  let next={...d,plans2:syncRecalc((d.plans2||[]).map(p=>p.id===planId?{...p,sessions:[]}:p))};
-  // Clear ONLY cells owned by the sessions being replaced.
-  const tt={...next.timetable},owners={...(next.slotOwners||{})};
-  for(const [day,slots] of Object.entries(owners)){let updated=false;for(const [slot,id] of Object.entries(slots||{}))if(oldIds.has(id)){if(!updated){owners[day]={...slots};tt[day]={...(tt[day]||{})};updated=true;}delete owners[day][slot];delete tt[day][slot];}}
-  next={...next,timetable:tt,slotOwners:owners};
-  for(const s of newSessions){next=syncAddSession(next,{...s,id:makeRandomId(),subject:plan.subject},planId);}
-  return next;
-}
 function SessionEditModal({plan, onSave, onClose}) {
   const [sessions,setSessions]=useState(()=>
     (plan.sessions||[]).map(s=>{
       const start=new Date(s.startedAt);
       const end=new Date(s.endedAt||s.startedAt+s.minutes*60000);
       return {
-        date: syncLocalDate(start.getTime()),
-        id:s.id,
+        date: s.date || start.toISOString().slice(0,10),
         startTime: `${String(start.getHours()).padStart(2,"0")}:${String(start.getMinutes()).padStart(2,"0")}`,
         endTime: `${String(end.getHours()).padStart(2,"0")}:${String(end.getMinutes()).padStart(2,"0")}`,
       };
@@ -1155,7 +1101,7 @@ function SessionEditModal({plan, onSave, onClose}) {
       const startedAt = new Date(`${s.date}T00:00:00`).getTime() + (sh*60+sm)*60000;
       const minutes = sessionMinutes(s);
       const endedAt = startedAt + minutes*60000;
-      return { id:s.id||makeRandomId(), date:s.date, startedAt, endedAt, minutes };
+      return { date:s.date, startedAt, endedAt, minutes };
     });
     onSave(rebuilt);
     onClose();
@@ -2564,13 +2510,10 @@ const num = x => Number.isFinite(Number(x)) && x!==null && x!=="" ? Number(x) : 
 const fmt = (v,d=1)=>v===null||!Number.isFinite(v)?"—":Number(v).toFixed(d);
 const dateAdd=(date,days)=>{const d=new Date(date+"T12:00:00");d.setDate(d.getDate()+days);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;};
 const dayOfWeek=date=>new Date(date+"T12:00:00").getDay();
-const defaultSchool=date=>[1,2,3,4,5].includes(dayOfWeek(date))?"7":"none";
-const schoolFor=(data,date)=>data.schoolDays?.[date]||defaultSchool(date);
-const schoolMinutes=mode=>mode==="6"?500:mode==="7"?560:0; // 07:00~15:20 / 16:20
-const windowMinutes=1170; // 07:00~다음 날 02:30; 기록 분석용 시간창일 뿐 공부 의무 아님
+// 학교 6·7교시 자동 제외는 사용하지 않음. 모든 시간은 실제 기록으로만 분류한다.
+const windowMinutes=1170; // 07:00~다음 날 02:30
 const timeSlotInWindow=slot=>{const clock=((START_HOUR*60+Number(slot)*10)%1440);return clock>=420||clock<150;};
 const slotClock=slot=>(START_HOUR*60+Number(slot)*10)%1440;
-const isSchoolSlot=(slot,mode)=>mode!=="none"&&slotClock(slot)>=420&&slotClock(slot)<(mode==="6"?920:980);
 const validQty=p=>num(p.actualQty);
 const planStats=p=>{
  const q=validQty(p),target=num(p.targetQty),est=num(p.expectedMinutes),actual=num(p.totalMinutes);
@@ -2580,14 +2523,6 @@ const planStats=p=>{
  const partial=!complete&&started;
  return {q,target,est,actual,finished,complete,started,partial,rate:q>0&&actual!==null?actual/q:null,error:complete&&est!==null&&actual!==null?actual-est:null};
 };
-function SchoolDaySettings({date,data,setData}){
- const value=schoolFor(data,date);
- return <div style={{background:"#10131d",border:"1px solid #29304a",borderRadius:10,padding:10,marginBottom:12}}>
-  <div style={{color:"#a5b4fc",fontSize:"0.77rem",fontWeight:800,marginBottom:7}}>🏫 {date} 학교 일정 · 시간 분석 제외 구간</div>
-  <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>{[["none","학교 안 감"],["6","6교시 · 15:20"],["7","7교시 · 16:20"]].map(([v,label])=><button key={v} onClick={()=>setData(d=>({...d,schoolDays:{...(d.schoolDays||{}),[date]:v}}))} style={{padding:"0.45rem 0.65rem",background:value===v?"#6366f1":"#171a24",color:value===v?"white":"#9ca3af",border:"1px solid #343955",borderRadius:7,cursor:"pointer",fontSize:"0.75rem"}}>{label}</button>)}</div>
-  <div style={{color:"#6b7280",fontSize:"0.69rem",marginTop:7}}>요일 기본값은 월~금 7교시이며 날짜별 선택이 우선 적용돼. 학교에서 직접 색칠한 공부 시간은 전체 공부 시간에 남아.</div>
- </div>;
-}
 function TinyLine({rows,keys,labels,height=180}){
  const w=700,h=height,pad=30;
  const vals=rows.flatMap(r=>keys.map(k=>r[k]).filter(v=>v!==null&&Number.isFinite(v)));
@@ -2644,34 +2579,33 @@ function StudyAnalytics({data,setData}){
  }
  // 타임테이블은 '공부했다'는 표시만 기록. 활동 속도·계획 성공·예측 오차로 유입되지 않음.
  const timeDaily=dates.map(ds=>{
-  const mode=schoolFor(data,ds);
   const painted=data.timetable?.[ds]||{};
   const labels=data.timeLabels?.[ds]||[];
-  const schoolSlots=new Set(),studySlots=new Set(),markedSlots=new Set();
+  const studySlots=new Set(),fillerSlots=new Set(),markedSlots=new Set();
   for(let i=0;i<TOTAL_SLOTS;i++){
    if(!timeSlotInWindow(i))continue;
-   if(isSchoolSlot(i,mode))schoolSlots.add(i);
    if(SUBJECTS.includes(painted[i]))studySlots.add(i);
+   if(painted[i]===FILLER_SLOT)fillerSlots.add(i);
   }
   const labelCounts={"휴식":0,"이탈":0,"개인 일정":0};
   for(const label of labels){
    const start=Number(label.start),end=Number(label.end);
    if(!Number.isFinite(start)||!Number.isFinite(end))continue;
    for(let i=0;i<TOTAL_SLOTS;i++){
-    if(!timeSlotInWindow(i)||schoolSlots.has(i)||studySlots.has(i))continue;
+    if(!timeSlotInWindow(i)||fillerSlots.has(i)||studySlots.has(i))continue;
     const t=slotClock(i);const offset=t<420?t+1440:t;
     if(offset>=start&&offset<end&&!markedSlots.has(i)){
      markedSlots.add(i);if(labelCounts[label.type]!==undefined)labelCounts[label.type]++;
     }
    }
   }
-  const availableSlots=Array.from({length:TOTAL_SLOTS},(_,i)=>i).filter(i=>timeSlotInWindow(i)&&!schoolSlots.has(i));
+  const availableSlots=Array.from({length:TOTAL_SLOTS},(_,i)=>i).filter(i=>timeSlotInWindow(i));
   const paintedAvailable=availableSlots.filter(i=>studySlots.has(i)).length;
-  const unrecorded=Math.max(0,availableSlots.length-paintedAvailable-markedSlots.size)*10;
-  return {date:ds,study:studySlots.size*10,available:availableSlots.length*10,rest:labelCounts["휴식"]*10,off:labelCounts["이탈"]*10,personal:labelCounts["개인 일정"]*10,unrecorded,school:schoolSlots.size*10};
+  const unrecorded=Math.max(0,availableSlots.length-paintedAvailable-fillerSlots.size-markedSlots.size)*10;
+  return {date:ds,study:studySlots.size*10,available:availableSlots.length*10,rest:labelCounts["휴식"]*10,off:labelCounts["이탈"]*10,personal:labelCounts["개인 일정"]*10,unrecorded,filler:fillerSlots.size*10};
  });
  const timeGroups=[];
- for(let i=0;i<timeDaily.length;i+=groupSize){const slice=timeDaily.slice(i,i+groupSize);timeGroups.push({label:slice[0].date,...Object.fromEntries(["study","available","rest","off","personal","unrecorded","school"].map(k=>[k,slice.reduce((n,r)=>n+r[k],0)/60]))});}
+ for(let i=0;i<timeDaily.length;i+=groupSize){const slice=timeDaily.slice(i,i+groupSize);timeGroups.push({label:slice[0].date,...Object.fromEntries(["study","available","rest","off","personal","unrecorded","filler"].map(k=>[k,slice.reduce((n,r)=>n+r[k],0)/60]))});}
  const card={background:"#10131c",border:"1px solid #252a3c",borderRadius:12,padding:14,marginBottom:12};
  const rowStyle={display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",marginBottom:12};
  const filteredByGroup=ACTIVITIES.flatMap(a=>SUBJECTS.map(sub=>{
@@ -2690,7 +2624,7 @@ function StudyAnalytics({data,setData}){
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`STUDY_OS_${first}_${anchor}.csv`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
  }
  function exportReport(){
-  const text=[`STUDY_OS 학습 데이터 보고서`,`기간: ${first} ~ ${anchor}`,`분석 과목: ${subject} / 활동: ${activity}`,`마감 계획: ${finished.length} / 완료 ${done} / 부분 ${partial} / 미시작 ${notStarted}`,`착수율: ${finished.length?fmt(started/finished.length*100):'—'}%`,`완료율: ${finished.length?fmt(done/finished.length*100):'—'}%`,`실제 측정 학습 시간: ${totalActual}분`,`단위당 시간: ${totalQty?fmt(measuredMinutes/totalQty,2):'—'}`,`평균 절대 예측 오차: ${fmt(mae,2)}분`,`WAPE: ${fmt(wape,2)}%`,`직접 입력 별점: ${rated.length?fmt(rated.reduce((n,p)=>n+Number(p.planRating),0)/rated.length,2):'—'}`,``,...filteredByGroup.map(r=>`${r.subject} / ${r.activity} | 마감 ${r.count}, 완료 ${r.complete}, 부분 ${r.partial}, 미시작 ${r.none}, 분/단위 ${fmt(r.avg,2)}, 예상 ${fmt(r.expected)}분, 실제 ${fmt(r.actual)}분, 별점 1~5개수 ${r.starCounts.join('/')}`),``,`시간 사용 (타임테이블 기준, 10분 단위)`,...timeDaily.map(r=>`${r.date} | 공부 ${r.study}분 | 휴식 ${r.rest}분 | 확인 이탈 ${r.off}분 | 개인 일정 ${r.personal}분 | 미기록 ${r.unrecorded}분 | 학교 제외 ${r.school}분`)];
+  const text=[`STUDY_OS 학습 데이터 보고서`,`기간: ${first} ~ ${anchor}`,`분석 과목: ${subject} / 활동: ${activity}`,`마감 계획: ${finished.length} / 완료 ${done} / 부분 ${partial} / 미시작 ${notStarted}`,`착수율: ${finished.length?fmt(started/finished.length*100):'—'}%`,`완료율: ${finished.length?fmt(done/finished.length*100):'—'}%`,`실제 측정 학습 시간: ${totalActual}분`,`단위당 시간: ${totalQty?fmt(measuredMinutes/totalQty,2):'—'}`,`평균 절대 예측 오차: ${fmt(mae,2)}분`,`WAPE: ${fmt(wape,2)}%`,`직접 입력 별점: ${rated.length?fmt(rated.reduce((n,p)=>n+Number(p.planRating),0)/rated.length,2):'—'}`,``,...filteredByGroup.map(r=>`${r.subject} / ${r.activity} | 마감 ${r.count}, 완료 ${r.complete}, 부분 ${r.partial}, 미시작 ${r.none}, 분/단위 ${fmt(r.avg,2)}, 예상 ${fmt(r.expected)}분, 실제 ${fmt(r.actual)}분, 별점 1~5개수 ${r.starCounts.join('/')}`),``,`시간 사용 (타임테이블 기준, 10분 단위)`,...timeDaily.map(r=>`${r.date} | 공부 ${r.study}분 | 휴식 ${r.rest}분 | 확인 이탈 ${r.off}분 | 개인 일정 ${r.personal}분 | 미기록 ${r.unrecorded}분 | 미집계 표시 ${r.filler}분`)];
   const blob=new Blob(['\ufeff'+text.join('\n')],{type:'text/plain;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`STUDY_OS_REPORT_${first}_${anchor}.txt`;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
  }
  function saveTimeLabel(){
@@ -2708,9 +2642,9 @@ function StudyAnalytics({data,setData}){
   <div style={{display:'grid',gridTemplateColumns:'repeat(2,minmax(0,1fr))',gap:8,marginBottom:12}}>{[["마감된 계획",finished.length+"개"],["완료 / 부분 / 미시작",`${done} / ${partial} / ${notStarted}`],["완료율",finished.length?fmt(done/finished.length*100)+'%':'—'],["착수율",finished.length?fmt(started/finished.length*100)+'%':'—'],["실측 학습 시간",fmt(totalActual,0)+'분'],["단위당 평균",totalQty?fmt(measuredMinutes/totalQty,2):'—'],["예측 MAE",mae!==null?fmt(mae,2)+'분':'—'],["예측 WAPE",wape!==null?fmt(wape,2)+'%':'—']].map(([k,v])=><div key={k} style={card}><div style={{color:'#9ca3af',fontSize:'0.68rem'}}>{k}</div><div style={{color:'#e5e7eb',fontWeight:800,fontSize:'1.1rem',marginTop:4}}>{v}</div></div>)}</div>
   {[["예상 시간 vs 실제 시간",["expected","actual"],["예상(분)","실제(분)"]],["예상 시간 오차 (실제−예상)",["error"],["오차(분)"]],["단위당 실제 소요 시간",["rate"],["분/문제 또는 분/쪽"]],["계획 완료율·착수율·부분 수행률",["completion","started","partial"],["완료율(%)","착수율(%)","부분 수행률(%)"]],["직접 입력 별점 평균",["stars"],["별점(1~5)"]],["별점 1~5점 각각의 개수",["star1","star2","star3","star4","star5"],["★1 개수","★2 개수","★3 개수","★4 개수","★5 개수"]]].map(([title,keys,labels])=><div key={title} style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.88rem',marginBottom:9}}>{title}</h3><TinyLine rows={groups} keys={keys} labels={labels}/></div>)}
   <div style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.9rem',marginBottom:10}}>과목 × 4개 활동 · 원본 집계</h3><div style={{overflowX:'auto'}}><table style={{borderCollapse:'collapse',width:'100%',fontSize:'0.7rem',color:'#d1d5db',whiteSpace:'nowrap'}}><thead><tr>{['과목','활동','마감','완료','부분','미시작','분/단위','예상(분)','실제(분)','★1','★2','★3','★4','★5'].map(k=><th key={k} style={{padding:7,borderBottom:'1px solid #30364a'}}>{k}</th>)}</tr></thead><tbody>{filteredByGroup.map(r=><tr key={r.subject+r.activity}>{[r.subject,r.activity,r.count,r.complete,r.partial,r.none,fmt(r.avg,2),fmt(r.expected,0),fmt(r.actual,0),...r.starCounts].map((v,i)=><td key={i} style={{padding:7,borderBottom:'1px solid #202638',textAlign:i>1?'right':'left'}}>{v}</td>)}</tr>)}</tbody></table>{!filteredByGroup.length&&<p style={{color:'#6b7280',padding:15}}>해당 기간에 분류된 계획 없음</p>}</div></div>
-  <div style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.9rem',marginBottom:9}}>시간 사용 · 직접 색칠 포함</h3><p style={{color:'#9ca3af',fontSize:'0.72rem',marginBottom:10}}>학교 시간은 분석 가능 시간에서 제외. 직접 색칠은 총공부 시간에만 포함하고, 계획 통계에는 반영하지 않아. 미기록은 낭비로 단정하지 않아.</p>
-   <TinyLine rows={timeGroups} keys={['study','rest','off','personal','unrecorded']} labels={['색칠된 공부(시간)','휴식(시간)','확인 이탈(시간)','개인 일정(시간)','미기록(시간)']}/>
-   <div style={{color:'#9ca3af',fontSize:'0.72rem',marginTop:8}}>전체 색칠 공부 {fmt(timeDaily.reduce((n,r)=>n+r.study,0)/60,1)}시간 · 확인 이탈 {fmt(timeDaily.reduce((n,r)=>n+r.off,0)/60,1)}시간 · 미기록 {fmt(timeDaily.reduce((n,r)=>n+r.unrecorded,0)/60,1)}시간</div>
+  <div style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.9rem',marginBottom:9}}>시간 사용 · 직접 색칠 포함</h3><p style={{color:'#9ca3af',fontSize:'0.72rem',marginBottom:10}}>학교 시간 자동 제외는 사용하지 않아. 과목 색칠은 공부 시간에만 포함하고, 미집계 색칠은 공부량·계획 통계에 포함하지 않아. 미기록은 낭비로 단정하지 않아.</p>
+   <TinyLine rows={timeGroups} keys={['study','filler','rest','off','personal','unrecorded']} labels={['색칠된 공부(시간)','미집계(시간)','휴식(시간)','확인 이탈(시간)','개인 일정(시간)','미기록(시간)']}/>
+   <div style={{color:'#9ca3af',fontSize:'0.72rem',marginTop:8}}>전체 색칠 공부 {fmt(timeDaily.reduce((n,r)=>n+r.study,0)/60,1)}시간 · 미집계 표시 {fmt(timeDaily.reduce((n,r)=>n+r.filler,0)/60,1)}시간 · 확인 이탈 {fmt(timeDaily.reduce((n,r)=>n+r.off,0)/60,1)}시간 · 미기록 {fmt(timeDaily.reduce((n,r)=>n+r.unrecorded,0)/60,1)}시간</div>
   </div>
   <div style={card}><h3 style={{color:'#e5e7eb',fontSize:'0.9rem',marginBottom:10}}>휴식·이탈·개인 일정 기록 (선택)</h3><div style={rowStyle}><input type="date" value={customDate} onChange={e=>setCustomDate(e.target.value)} style={{...inp,flex:1}}/><select value={customType} onChange={e=>setCustomType(e.target.value)} style={{...inp,flex:1}}>{['휴식','이탈','개인 일정'].map(x=><option key={x}>{x}</option>)}</select></div><div style={rowStyle}><input type="time" value={customStart} onChange={e=>setCustomStart(e.target.value)} style={{...inp,flex:1}}/><input type="time" value={customEnd} onChange={e=>setCustomEnd(e.target.value)} style={{...inp,flex:1}}/><button onClick={saveTimeLabel} style={{...inp,width:'auto',background:'#6366f1',color:'white',cursor:'pointer'}}>기록</button></div>
    {(data.timeLabels?.[customDate]||[]).map(t=><div key={t.id} style={{display:'flex',justifyContent:'space-between',color:'#9ca3af',fontSize:'0.74rem',padding:4}}><span>{t.type} · {String(Math.floor(t.start%1440/60)).padStart(2,'0')}:{String(t.start%60).padStart(2,'0')}~{String(Math.floor(t.end%1440/60)).padStart(2,'0')}:{String(t.end%60).padStart(2,'0')}</span><button onClick={()=>setData(d=>({...d,timeLabels:{...(d.timeLabels||{}),[customDate]:(d.timeLabels?.[customDate]||[]).filter(x=>x.id!==t.id)}}))} style={{background:'none',border:0,color:'#ef4444',cursor:'pointer'}}>삭제</button></div>)}
@@ -2793,17 +2727,15 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
   const batchEligiblePlans=dayPlans.filter(p=>p.status!=="done");
 
   function paint(si){
-    if(activeTimer){alert("타이머 실행 중에는 기록 충돌을 막기 위해 색칠할 수 없어. 먼저 타이머를 정지해줘.");return;}
-    setData(d=>syncPaint(d,date,si,erasing?null:paintSubject));
+    setData(d=>{const tt={...d.timetable};const day={...(tt[date]||{})};
+      if(erasing)delete day[si]; else day[si]=paintSubject;
+      tt[date]=day;return {...d,timetable:tt};});
   }
   function handleDown(si){setDragging(true);paint(si);}
   function handleEnter(si){if(dragging)paint(si);}
   function handleUp(){setDragging(false);}
-  function clearDay(){
-    if(activeTimer){alert("타이머를 먼저 정지해줘.");return;}
-    if(!confirm("이 날 타임테이블과 해당 시간의 공부 기록을 모두 지울까?"))return;
-    setData(d=>{let n=d;for(let si=0;si<TOTAL_SLOTS;si++)n=syncPaint(n,date,si,null);return {...n,timetable:{...n.timetable,[date]:{}}};});
-  }
+  function clearDay(){if(!confirm("이 날 타임테이블 초기화?"))return;
+    setData(d=>{const tt={...d.timetable};delete tt[date];return {...d,timetable:tt};});}
 
   function savePlan(p){
     setData(d=>{const list=[...(d.plans2||[])];
@@ -2902,9 +2834,52 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
 
   // 세션(공부 시간 구간) 수동 수정 — 계획의 totalMinutes 재계산 + 그 계획이
   // 칠했던 타임테이블 슬롯을 전부 지우고 새 세션 시각 기준으로 다시 칠함
-  function editSessions(planId,newSessions){
-    if(activeTimer?.planId===planId){alert("진행 중인 타이머를 먼저 정지해줘.");return;}
-    setData(d=>syncEditPlan(d,planId,newSessions));
+  function editSessions(planId, newSessions){
+    setData(d=>{
+      const plans=[...(d.plans2||[])];
+      const idx=plans.findIndex(p=>p.id===planId);
+      if(idx<0)return d;
+      const plan=plans[idx];
+      const oldSessions=plan.sessions||[];
+      const totalMinutes=newSessions.reduce((a,s)=>a+s.minutes,0);
+      plans[idx]={...plan, sessions:newSessions, totalMinutes};
+
+      // 옛 세션들이 칠했던 슬롯 지우기 (이 계획 과목으로 칠해진 것만, 다른 계획 것은 건드리지 않음)
+      const tt={...d.timetable};
+      function slotRangeOf(session){
+        const start=new Date(session.startedAt);
+        const studyDate=new Date(start);
+        if(start.getHours()<START_HOUR) studyDate.setDate(start.getDate()-1);
+        const dateStr=`${studyDate.getFullYear()}-${String(studyDate.getMonth()+1).padStart(2,"0")}-${String(studyDate.getDate()).padStart(2,"0")}`;
+        const startTotalMin=start.getHours()*60+start.getMinutes();
+        const offset=((startTotalMin-START_HOUR*60)+1440)%1440;
+        const startSlot=Math.floor(offset/10);
+        const slotCount=Math.max(1,Math.round(session.minutes/10));
+        return {dateStr,startSlot,slotCount};
+      }
+      oldSessions.forEach(s=>{
+        const {dateStr,startSlot,slotCount}=slotRangeOf(s);
+        if(!tt[dateStr])return;
+        const day={...tt[dateStr]};
+        for(let i=0;i<slotCount;i++){
+          const si=(startSlot+i)%TOTAL_SLOTS;
+          if(day[si]===plan.subject) delete day[si];
+        }
+        tt[dateStr]=day;
+      });
+      // 새 세션들로 다시 칠하기
+      newSessions.forEach(s=>{
+        const {dateStr,startSlot,slotCount}=slotRangeOf(s);
+        const day={...(tt[dateStr]||{})};
+        for(let i=0;i<slotCount;i++){
+          const si=(startSlot+i)%TOTAL_SLOTS;
+          day[si]=plan.subject;
+        }
+        tt[dateStr]=day;
+      });
+
+      return {...d, plans2:plans, timetable:tt};
+    });
   }
 
   return (
@@ -2927,11 +2902,11 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
         </div>
       </div>
 
-      <SchoolDaySettings date={date} data={data} setData={setData}/>
+      <div style={{color:"#94a3b8",fontSize:"0.72rem",marginBottom:10}}>미집계 색칠은 불가피한 시간이나 따로 측정하지 않은 시간을 표시할 때 사용해. 공부 시간·계획 달성률에는 더하지 않아.</div>
       {/* 과목 팔레트 */}
       <div style={{display:"flex",gap:5,flexWrap:"wrap",marginBottom:"1rem"}}>
-        {SUBJECTS.map(sub=>{
-          const c=SUBJECT_COLORS[sub];const mins=subMins[sub]||0;
+        {[...SUBJECTS,FILLER_SLOT].map(sub=>{
+          const c=sub===FILLER_SLOT?FILLER_COLOR:SUBJECT_COLORS[sub];const mins=subMins[sub]||0;
           return <button key={sub} onClick={()=>{setPaintSubject(sub);setErasing(false);}} style={{
             padding:"0.25rem 0.65rem",borderRadius:7,
             border:`2px solid ${paintSubject===sub&&!erasing?c?.bg:"transparent"}`,
@@ -2967,7 +2942,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
                 {Array.from({length:SLOTS_PER_HOUR},(_,mi)=>{
                   const si=hi*SLOTS_PER_HOUR+mi;
                   const sub=daySlots[si];
-                  const c=sub?SUBJECT_COLORS[sub]:null;
+                  const c=sub?(sub===FILLER_SLOT?FILLER_COLOR:SUBJECT_COLORS[sub]):null;
                   return <div key={mi}
                     onMouseDown={()=>handleDown(si)} onMouseEnter={()=>handleEnter(si)}
                     onTouchStart={e=>{e.preventDefault();handleDown(si);}}
@@ -3388,10 +3363,37 @@ export default function App() {
     });
   }
   function stopTimer(){
-    if(!activeTimer)return;
-    const end=Date.now(),start=activeTimer.startedAt;
-    if(end>start){
-      setData(d=>syncAddSession(d,{subject:activeTimer.subject,content:activeTimer.content,startedAt:start,endedAt:end},activeTimer.planId));
+    if(!activeTimer) return;
+    const elapsedMs = Date.now()-activeTimer.startedAt;
+    const elapsedMin = Math.round(elapsedMs/60000);
+    if(elapsedMin>=1){
+      // 타이머 시작 시각부터 elapsedMin 분만큼 10분 슬롯을 자동으로 채움
+      const startDate = new Date(activeTimer.startedAt);
+      // 학습일 기준: 새벽 6시 이전 시작이면 전날 학습으로 귀속
+      const studyDate = new Date(startDate);
+      if (startDate.getHours() < START_HOUR) studyDate.setDate(startDate.getDate()-1);
+      const dateStr = `${studyDate.getFullYear()}-${String(studyDate.getMonth()+1).padStart(2,"0")}-${String(studyDate.getDate()).padStart(2,"0")}`;
+      const startTotalMin = startDate.getHours()*60+startDate.getMinutes();
+      const startOffsetFromWindow = ((startTotalMin - START_HOUR*60)+1440)%1440; // 06:00 기준 오프셋(분)
+      const startSlot = Math.floor(startOffsetFromWindow/10);
+      const slotCount = Math.max(1, Math.round(elapsedMin/10));
+      setData(d=>{
+        const tt={...d.timetable};
+        const day={...(tt[dateStr]||{})};
+        for(let i=0;i<slotCount;i++){
+          const si=(startSlot+i)%TOTAL_SLOTS;
+          day[si]=activeTimer.subject;
+        }
+        tt[dateStr]=day;
+        // 계획 타이머라면 해당 계획에 실행 시간을 누적한다.
+        // 계획 외 공부(adhoc)는 타임테이블에만 기록해서 기존 계획 데이터에는 손대지 않는다.
+        const plans=activeTimer.planId==null ? (d.plans2||[]) : (d.plans2||[]).map(p=>{
+          if(p.id!==activeTimer.planId) return p;
+          const sessions=[...(p.sessions||[]), { date:dateStr, minutes:elapsedMin, startedAt:activeTimer.startedAt, endedAt:Date.now() }];
+          return { ...p, totalMinutes:(p.totalMinutes||0)+elapsedMin, sessions };
+        });
+        return {...d, timetable:tt, plans2:plans};
+      });
     }
     setActiveTimer(null);
   }
