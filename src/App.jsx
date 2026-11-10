@@ -1112,6 +1112,15 @@ function SessionEditModal({plan, onSave, onClose}) {
       <p style={{color:"#6b7280",fontSize:"0.78rem",marginBottom:"1rem",lineHeight:1.6}}>
         몇 시부터 몇 시까지 했는지 직접 고칠 수 있어. 수정하면 타임테이블 색칠도 같이 반영돼.
       </p>
+      {(plan.carryHistory||[]).length>0&&<div style={{background:"#151923",border:"1px solid #334155",borderRadius:9,padding:"0.7rem",marginBottom:12}}>
+        <div style={{color:"#fbbf24",fontWeight:800,fontSize:"0.78rem",marginBottom:5}}>이월된 이전 공부 기록 (읽기 전용)</div>
+        {(plan.carryHistory||[]).map((h,i)=><div key={h.sourcePlanId||i} style={{color:"#cbd5e1",fontSize:"0.72rem",padding:"0.25rem 0"}}>
+          {h.date} · {Number(h.minutes)||0}분 · 부분 수행 {h.actualQty??"—"} · 별점 {h.planRating??"미평가"}
+          {(h.sessions||[]).map((ss,j)=><div key={j} style={{color:"#94a3b8",paddingLeft:10}}>
+            {new Date(ss.startedAt).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})} ~ {new Date(ss.endedAt||ss.startedAt+ss.minutes*60000).toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"})} ({ss.minutes}분)
+          </div>)}
+        </div>)}
+      </div>}
       <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:"1rem"}}>
         {sessions.length===0&&<div style={{color:"#2d3241",fontSize:"0.82rem",textAlign:"center",padding:"1rem 0"}}>기록된 세션이 없어</div>}
         {sessions.map((s,i)=>(
@@ -1179,6 +1188,9 @@ function PlanCard({plan,onStatus,onEdit,onDelete,activeTimer,onStartTimer,onStop
       <div style={{color:plan.status==="done"?"#4b5563":"#d1d5db",fontSize:"0.82rem",lineHeight:1.6,marginBottom:plan.note?6:8,textDecoration:plan.status==="done"?"line-through":"none"}}>{plan.content}</div>
       {Number(plan.planRating)>=1&&Number(plan.planRating)<=5&&<div style={{color:"#f59e0b",fontSize:"0.85rem",marginBottom:8}}>{"★".repeat(plan.planRating)}{"☆".repeat(5-plan.planRating)} <span style={{color:"#9ca3af"}}>{plan.planRating}/5</span></div>}
       {plan.note&&<div style={{color:"#4b5563",fontSize:"0.72rem",marginBottom:8}}>📌 {plan.note}</div>}
+      {(plan.carryHistory||[]).length>0&&<div style={{color:"#fbbf24",fontSize:"0.7rem",marginBottom:7}}>
+        ↪ 이월 기록 {(plan.carryHistory||[]).length}회 · 이전 타이머 {plan.carryHistory.reduce((n,h)=>n+(Number(h.minutes)||0),0)}분 보존 · 현재 타이머 {Number(plan.totalMinutes)||0}분 · 누적 부분 수행 {plan.actualQty??"—"}
+      </div>}
       {plan.activity&&<div style={{color:"#a5b4fc",fontSize:"0.72rem",marginBottom:7}}>{plan.activity} · 목표 {plan.targetQty??"미입력"}{plan.activity==="문제 풀이"?"문제":"쪽"} · 전체 예상 {plan.expectedMinutes??"—"}분 · 실제 {plan.actualQty??"—"}</div>}
       {plan.activity&&plan.status==="todo"&&<div style={{display:"flex",gap:5,marginBottom:8,alignItems:"center"}}><input type="number" min="0" max={plan.targetQty??undefined} placeholder="현재 완료량" value={partialQty} onChange={e=>setPartialQty(e.target.value)} style={{...inp,flex:1,minWidth:0,padding:"0.3rem"}}/><button onClick={()=>onStatus(plan.id,"todo",null,{actualQty:partialQty===""?null:Number(partialQty)})} style={{border:"1px solid #6366f160",borderRadius:7,background:"#6366f120",color:"#a5b4fc",padding:"0.35rem",cursor:"pointer"}}>부분 수행 저장</button></div>}
       {plan.status==="todo"&&onStartTimer&&<div style={{marginBottom:6}}>{isRunning?<button onClick={onStopTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:"1px solid #ef444440",background:"#ef444418",color:"#ef4444",fontSize:"0.76rem",fontWeight:700,cursor:"pointer"}}>■ 타이머 정지</button>:<button onClick={()=>onStartTimer(plan)} disabled={!!activeTimer} style={{width:"100%",padding:"0.4rem",borderRadius:7,border:`1px solid ${activeTimer?"#2a2d3a":(c?.bg||"#6366f1")+"50"}`,background:activeTimer?"transparent":(c?.bg||"#6366f1")+"18",color:activeTimer?"#4b5563":(c?.text||"#a5b4fc"),fontSize:"0.76rem",fontWeight:700,cursor:activeTimer?"not-allowed":"pointer"}}>{activeTimer?"다른 타이머 실행 중":"▶ 타이머 시작"}</button>}</div>}
@@ -2769,6 +2781,29 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
       return {...d,plans2:list};
     });
   }
+  // 이월 기록은 이전 날짜의 세션을 이동/복제하지 않고 누적 이력으로 연결한다.
+  // 과거 세션은 원래 날짜에 남아 통계와 타임테이블에서 한 번만 집계된다.
+  function makeCarryPlan(plan,tom){
+    const {totalMinutes,sessions,planRating,failReason,deleteReason,deletedAt,previousStatus,...rest}=plan;
+    const history=[...(plan.carryHistory||[])];
+    history.push({
+      sourcePlanId:plan.id,date:plan.date,
+      sessions:(sessions||[]).map(x=>({...x})),
+      minutes:Number(totalMinutes)||0,
+      actualQty:plan.actualQty??null,
+      planRating:planRating??null,
+      status:plan.status
+    });
+    return {...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",
+      rootId:plan.rootId||plan.id,carryHistory:history,
+      // 현재 날짜에 새로 측정하는 시간은 0부터 시작해 과거 공부시간의 이중 집계를 방지한다.
+      sessions:[],totalMinutes:0,
+      // 부분 수행량은 목표 누적 진도로 이어진다.
+      actualQty:plan.actualQty??null,
+      // 완료 평가 별점은 지난 시도의 기록으로 보존하고 새 시도는 별도로 평가한다.
+      planRating:null,
+      note:"[이월] "+plan.content.slice(0,30)};
+  }
   function setStatus(id,status,failReason,extraPatch={}){
     setData(d=>{
       const list=[...(d.plans2||[])];
@@ -2779,11 +2814,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
       if(status==="failed"){
         const tom=nextDay(plan.date);
         if(!list.some(p=>p.id===plan.id+"_m_"+tom)){
-          // 이월본은 "내일 다시 할 계획"일 뿐, 오늘 이미 기록된 공부시간·실패사유까지 복사하면 안 됨
-          // rootId는 최초 원본을 계속 이어받아서, 며칠 연속 실패해도 "같은 계획의 반복 시도"로 추적 가능
-          const { totalMinutes, sessions, actualQty:_aq, planRating:_pr, failReason:_fr, ...rest } = plan;
-          const rootId = plan.rootId || plan.id;
-          list.push({...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",rootId,note:"[이월] "+plan.content.slice(0,30)});
+          list.push(makeCarryPlan(plan,tom));
         }
       }
       return {...d,plans2:list};});
@@ -2822,9 +2853,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
         list[idx]=plan;
         const tom=nextDay(plan.date);
         if(!list.some(p=>p.id===plan.id+"_m_"+tom)){
-          const {totalMinutes,sessions,actualQty:_aq,planRating:_pr,failReason:_fr,deleteReason:_dr,deletedAt:_da,previousStatus:_ps,...rest}=plan;
-          const rootId=plan.rootId||plan.id;
-          list.push({...rest,id:plan.id+"_m_"+tom,date:tom,status:"todo",rootId,note:"[이월] "+plan.content.slice(0,30)});
+          list.push(makeCarryPlan(plan,tom));
         }
       }
       return {...d,plans2:list};
@@ -2981,6 +3010,7 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
               <div style={{marginBottom:8}}>
                 <span style={{color:"#9ca3af",fontSize:"0.76rem",fontWeight:700}}>
                   오늘 계획 <span style={{color:"#6366f1"}}>{dayPlans.length}개</span>
+                  <span style={{color:"#a5b4fc",marginLeft:9}}>⏱ 하루 예상 총 소요시간 {(()=>{const m=dayPlans.reduce((sum,p)=>sum+(Number.isFinite(Number(p.expectedMinutes))&&Number(p.expectedMinutes)>0?Number(p.expectedMinutes):0),0);return `${Math.floor(m/60)}시간 ${m%60}분`;})()}</span>
                   <span style={{color:"#22c55e",marginLeft:6}}>✅{dayPlans.filter(p=>p.status==="done").length}</span>
                   <span style={{color:"#ef4444",marginLeft:4}}>❌{dayPlans.filter(p=>p.status==="failed").length}</span>
                   {dayPlans.some(p=>p.status==="failed"&&!p.failReason)&&<span style={{color:"#f59e0b",marginLeft:5}}>사유 미분류 {dayPlans.filter(p=>p.status==="failed"&&!p.failReason).length}</span>}
