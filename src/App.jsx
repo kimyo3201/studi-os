@@ -3010,7 +3010,6 @@ function ScheduleView({data,setData,initDate,activeTimer,onStartTimer,onStopTime
               <div style={{marginBottom:8}}>
                 <span style={{color:"#9ca3af",fontSize:"0.76rem",fontWeight:700}}>
                   오늘 계획 <span style={{color:"#6366f1"}}>{dayPlans.length}개</span>
-                  <span style={{color:"#a5b4fc",marginLeft:9}}>⏱ 하루 예상 총 소요시간 {(()=>{const m=dayPlans.reduce((sum,p)=>sum+(Number.isFinite(Number(p.expectedMinutes))&&Number(p.expectedMinutes)>0?Number(p.expectedMinutes):0),0);return `${Math.floor(m/60)}시간 ${m%60}분`;})()}</span>
                   <span style={{color:"#22c55e",marginLeft:6}}>✅{dayPlans.filter(p=>p.status==="done").length}</span>
                   <span style={{color:"#ef4444",marginLeft:4}}>❌{dayPlans.filter(p=>p.status==="failed").length}</span>
                   {dayPlans.some(p=>p.status==="failed"&&!p.failReason)&&<span style={{color:"#f59e0b",marginLeft:5}}>사유 미분류 {dayPlans.filter(p=>p.status==="failed"&&!p.failReason).length}</span>}
